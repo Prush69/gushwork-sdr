@@ -195,7 +195,15 @@ async def _handle_response(
         _extract_known_fields(last_user, state)
 
     # ⚡ TRIGGER BACKGROUND AEO AUDIT IF NOT STARTED
-    if state.company_name and state.industry and not state.audit_started:
+    # Guard against junk extractions like "industry" or "here"
+    invalid_names = {"industry", "company", "startup", "here", "is", "unknown", "none"}
+    company = state.company_name or ""
+    
+    if (len(company) > 2 and 
+        company.lower() not in invalid_names and 
+        state.industry and 
+        not state.audit_started):
+        
         state.audit_started = True
         from app.tools.audit import run_background_aeo_audit
         asyncio.create_task(run_background_aeo_audit(state))

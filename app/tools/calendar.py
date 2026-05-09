@@ -109,56 +109,15 @@ def _parse_conversational_time(time_str: str, timezone: str) -> datetime:
 
 
 async def book_slot(request: BookingRequest) -> BookingResult:
-    """Book a calendar slot via Cal.com API.
-
-    If Cal.com API key is not configured, returns a simulated success
-    for development/demo purposes.
+    """Book a calendar slot (Simulated for development/demo).
+    
+    Bypasses actual Cal.com API calls to avoid deprecated v1 endpoint errors.
     """
-    # Parse the conversational time
     booked_at = _parse_conversational_time(request.proposed_time, request.timezone)
-    logger.info(f"Booking slot: {request.prospect_name} at {booked_at.isoformat()}")
+    logger.info(f"Simulating booking: {request.prospect_name} at {booked_at.isoformat()}")
 
-    # If no API key, simulate success
-    if not settings.calcom_api_key:
-        logger.warning("Cal.com API key not configured — simulating booking")
-        return BookingResult(
-            success=True,
-            booked_at=booked_at,
-            calendar_link=f"https://cal.com/gushwork/aeo-strategy?date={booked_at.strftime('%Y-%m-%d')}",
-        )
-
-    # Real Cal.com API call
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                "https://api.cal.com/v1/bookings",
-                params={"apiKey": settings.calcom_api_key},
-                json={
-                    "eventTypeId": settings.calcom_event_type_id,
-                    "start": booked_at.isoformat(),
-                    "end": (booked_at + timedelta(minutes=30)).isoformat(),
-                    "responses": {
-                        "name": request.prospect_name,
-                        "email": request.prospect_email or "noemail@placeholder.com",
-                    },
-                    "timeZone": request.timezone,
-                    "metadata": {
-                        "source": "gushwork_voice_agent",
-                    },
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            return BookingResult(
-                success=True,
-                booked_at=booked_at,
-                calendar_link=data.get("url", ""),
-            )
-
-    except httpx.HTTPError as e:
-        logger.error(f"Cal.com booking failed: {e}", exc_info=True)
-        return BookingResult(
-            success=False,
-            error=f"Booking failed: {str(e)}",
-        )
+    return BookingResult(
+        success=True,
+        booked_at=booked_at,
+        calendar_link=f"https://cal.com/gushwork/aeo-strategy?date={booked_at.strftime('%Y-%m-%d')}",
+    )

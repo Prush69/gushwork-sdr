@@ -159,10 +159,16 @@ def _build_state_summary(state: CallState) -> str:
             facts.append(f"{label}: {value}")
 
     if state.audit_result:
+        audit = state.audit_result
+        if isinstance(audit, dict):
+            sov = float(audit.get("share_of_voice_pct", 0.0))
+            score = float(audit.get("aeo_score", 0.0))
+        else:
+            sov = getattr(audit, "share_of_voice_pct", 0.0)
+            score = getattr(audit, "aeo_score", 0.0)
+            
         facts.append(
-            "Audit: "
-            f"{state.audit_result.share_of_voice_pct:.1f}% Share of Voice, "
-            f"{state.audit_result.aeo_score:.1f}/100 AEO score"
+            f"Audit: {sov:.1f}% Share of Voice, {score:.1f}/100 AEO score"
         )
     if state.booking_result and state.booking_result.success:
         facts.append(f"Booking confirmed: {state.booking_result.booked_at}")
