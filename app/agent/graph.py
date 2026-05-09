@@ -17,7 +17,6 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 from langsmith import traceable
 
@@ -36,26 +35,47 @@ logger = logging.getLogger(__name__)
 TOOL_MAX_RETRIES = 2
 
 # ═══════════════════════════════════════════════════════════
-# LLM Singleton
+# LLM Singleton (supports Gemini & Groq)
 # ═══════════════════════════════════════════════════════════
 
-_llm: ChatGoogleGenerativeAI | None = None
+_llm: Any = None
 _llm_with_tools: Any | None = None
 
 
-def get_llm() -> ChatGoogleGenerativeAI:
-    """Lazy-init the Gemini chat model with pipeline-optimised params."""
+def get_llm() -> Any:
+    """Lazy-init the LLM based on LLM_PROVIDER config (gemini or groq)."""
     global _llm
     if _llm is None:
-        _llm = ChatGoogleGenerativeAI(
-            model=settings.gemini_model,
-            temperature=settings.llm_temperature,
-            max_output_tokens=settings.llm_max_tokens,
-            google_api_key=settings.gemini_api_key,
-            thinking_budget=0,
-            include_thoughts=False,
-            streaming=True,  # Enable token-level streaming
-        )
+        provider = settings.llm_provider.lower()
+        logger.info(f"Initializing LLM: provider={provider}")
+
+        if provider == "groq":
+            from langchain_groq import ChatGroq
+
+            logger.info(f"  model={settings.groq_model}")
+            _llm = ChatGroq(
+                model=settings.groq_model,
+                temperature=settings.llm_temperature,
+                max_tokens=settings.llm_max_tokens,
+                api_key=settings.groq_api_key,
+                streaming=True,
+            )
+        else:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+
+            logger.info(f"  model={settings.gemini_model}")
+            kwargs: dict[str, Any] = {
+                "model": settings.gemini_model,
+                "temperature": settings.llm_temperature,
+                "max_output_tokens": settings.llm_max_tokens,
+                "google_api_key": settings.gemini_api_key,
+                "streaming": True,
+            }
+            if "preview" in settings.gemini_model or settings.gemini_model.startswith("gemini-3"):
+                if not settings.gemini_model.endswith("-lite"):
+                    kwargs["thinking_budget"] = 0
+                    kwargs["include_thoughts"] = False
+            _llm = ChatGoogleGenerativeAI(**kwargs)
     return _llm
 
 

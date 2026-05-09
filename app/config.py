@@ -21,9 +21,12 @@ class Settings(BaseSettings):
     retell_agent_id: str = ""
     retell_webhook_secret: str = ""
 
-    # ── Gemini ─────────────────────────────────────────────
+    # ── LLM ────────────────────────────────────────────────
+    llm_provider: str = "groq"  # "gemini" or "groq"
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-3-flash-preview"
+    gemini_model: str = "gemini-3.1-flash-lite"
+    groq_api_key: str = ""
+    groq_model: str = "llama-3.3-70b-versatile"
 
     # ── Cal.com ────────────────────────────────────────────
     calcom_api_key: str = ""
@@ -40,7 +43,7 @@ class Settings(BaseSettings):
 
     # ── LLM Tuning ─────────────────────────────────────────
     llm_temperature: float = 0.2
-    llm_max_tokens: int = 100
+    llm_max_tokens: int = 300
     llm_context_messages: int = 16
     vad_silence_ms: int = 400
 
