@@ -370,10 +370,8 @@
         Powered by <a href="#">Gushwork AEO Engine</a> · Gemini 3 Flash · LangGraph
     </div>
 
-    <!-- Retell Client SDK -->
-    <script src="https://cdn.jsdelivr.net/npm/retell-client-js-sdk@2/dist/index.umd.min.js"></script>
-
-    <script>
+    <script type="module">
+        import { RetellWebClient } from "https://esm.sh/retell-client-js-sdk@2.0.7";
         // ── Backend URL ──
         // When hosted on the same domain (Render), use relative paths.
         // When hosted separately (Vercel/GitHub Pages), use the full Render URL.
@@ -397,6 +395,7 @@
                 await startCall();
             }
         }
+        window.toggleCall = toggleCall;
 
         async function startCall() {
             btn.disabled = true;
@@ -422,8 +421,7 @@
                 }
 
                 // 2. Initialize Retell client
-                const ClientClass = window.Retell?.RetellWebClient || window.RetellWebClient;
-                retellClient = new ClientClass();
+                retellClient = new RetellWebClient();
 
                 // 3. Event listeners
                 retellClient.on('call_started', () => {
