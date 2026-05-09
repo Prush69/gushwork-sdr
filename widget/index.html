@@ -422,7 +422,8 @@
                 }
 
                 // 2. Initialize Retell client
-                retellClient = new RetellWebClient();
+                const ClientClass = window.Retell?.RetellWebClient || window.RetellWebClient;
+                retellClient = new ClientClass();
 
                 // 3. Event listeners
                 retellClient.on('call_started', () => {
