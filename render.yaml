@@ -6,7 +6,7 @@ services:
     name: gushwork-sdr
     runtime: python
     plan: starter          # $7/mo — always-on, no cold starts
-    buildCommand: pip install -e .
+    buildCommand: pip install --upgrade pip setuptools wheel && pip install .
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:

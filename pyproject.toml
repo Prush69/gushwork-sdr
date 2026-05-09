@@ -38,5 +38,5 @@ line-length = 100
 select = ["E", "F", "I", "N", "UP", "B"]
 
 [build-system]
-requires = ["setuptools>=75.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+requires = ["setuptools>=70.0", "wheel"]
+build-backend = "setuptools.build_meta"

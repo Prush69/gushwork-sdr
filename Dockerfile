@@ -7,9 +7,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps
+# Upgrade pip + setuptools first
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Python deps (non-editable for production)
 COPY pyproject.toml .
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir .
 
 # App code
 COPY . .
