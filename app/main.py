@@ -94,14 +94,12 @@ async def health():
     }
 
 
+from fastapi.responses import RedirectResponse
+
 @app.get("/")
 async def root():
-    """Root redirect to docs."""
-    return {
-        "service": "Gushwork Inbound AEO Voice Agent",
-        "docs": "/docs",
-        "health": "/health",
-    }
+    """Root redirect to the web widget UI."""
+    return RedirectResponse(url="/widget")
 
 
 # ── Startup / Shutdown ─────────────────────────────────────
