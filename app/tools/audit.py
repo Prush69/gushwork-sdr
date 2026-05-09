@@ -164,55 +164,105 @@ async def run_aeo_audit(request: AuditRequest) -> AuditResult:
 
 
 import json
+import aiohttp
 
-async def _real_audit(request: AuditRequest) -> AuditResult:
-    """Core audit logic — fires a single consolidated Gemini query in JSON mode."""
-    client = _get_genai_client()
+async def run_background_aeo_audit(state: CallState) -> None:
+    """Run the AEO audit in the background using Tavily + Groq and update the state."""
+    request = AuditRequest(
+        company_name=state.company_name or "Unknown",
+        industry=state.industry or "Unknown"
+    )
     
-    prompt = f"""
-You are an expert Answer Engine Optimization (AEO) analyst. 
-Analyze the AI search visibility for {request.company_name} in the {request.industry} industry.
-Evaluate them across 5 dimensions: Brand Presence, Competitor Overlap, Sentiment, Feature Extraction, and Recommendation Frequency.
+    t0 = time.perf_counter()
+    logger.info(f"🔍 Starting BACKGROUND AEO Audit for {request.company_name} in {request.industry}...")
+    
+    # 1. Check cache
+    cached = _get_cached_audit(request)
+    if cached:
+        logger.info("✅ Background Audit complete (CACHED)")
+        state.audit_result = cached
+        return
 
+    # 2. Check keys
+    if not settings.tavily_api_key or not settings.groq_api_key:
+        logger.warning("Missing Tavily or Groq API key, using fallback for background audit.")
+        state.audit_result = _fallback_audit(request)
+        return
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            # 3. Ping Tavily
+            tavily_req = {
+                "api_key": settings.tavily_api_key,
+                "query": f"top {request.industry} companies and {request.company_name} reviews",
+                "search_depth": "basic",
+                "max_results": 5,
+            }
+            async with session.post("https://api.tavily.com/search", json=tavily_req) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Tavily search failed: {await resp.text()}")
+                    state.audit_result = _fallback_audit(request)
+                    return
+                search_data = await resp.json()
+
+            # 4. Ping Groq
+            context_data = json.dumps(search_data.get("results", []))
+            prompt = f"""
+You are an expert Answer Engine Optimization (AEO) analyst.
+Analyze these search results for {request.company_name} in the {request.industry} industry:
+{context_data}
+
+Based on how prominent they are in these search results, calculate a mock "Share of Voice" and generate a diagnosis and 2 recommendations.
 Return a strictly formatted JSON object with exactly these keys:
 "share_of_voice_pct": A float between 0.0 and 100.0.
 "aeo_score": A float between 0.0 and 100.0.
 "diagnosis": A 2-sentence conversational summary of their current AI visibility.
-"recommendations": A list of exactly 3 actionable steps to improve AEO as strings.
+"recommendations": A list of exactly 2 actionable steps to improve AEO as strings.
 """
-
-    response = await asyncio.to_thread(
-        client.models.generate_content,
-        model=settings.gemini_model,
-        contents=prompt,
-        config={
-            "response_mime_type": "application/json",
-        }
-    )
-    
-    try:
-        data = json.loads(response.text)
-        return AuditResult(
+            groq_req = {
+                "model": settings.groq_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.1,
+                "max_tokens": 300,
+            }
+            headers = {"Authorization": f"Bearer {settings.groq_api_key}", "Content-Type": "application/json"}
+            async with session.post("https://api.groq.com/openai/v1/chat/completions", json=groq_req, headers=headers) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Groq synthesis failed: {await resp.text()}")
+                    state.audit_result = _fallback_audit(request)
+                    return
+                groq_data = await resp.json()
+                
+        # 5. Parse and store
+        content = groq_data["choices"][0]["message"]["content"]
+        data = json.loads(content)
+        result = AuditResult(
             company_name=request.company_name,
             industry=request.industry,
             share_of_voice_pct=float(data.get("share_of_voice_pct", 0.0)),
             aeo_score=float(data.get("aeo_score", 0.0)),
             diagnosis=data.get("diagnosis", "We couldn't find much visibility for you right now."),
-            recommendations=data.get("recommendations", ["Implement AEO basics."])[:3]
+            recommendations=data.get("recommendations", ["Implement AEO basics."])[:2]
         )
+        
+        _store_cached_audit(request, result)
+        state.audit_result = result
+        
+        elapsed = (time.perf_counter() - t0) * 1000
+        logger.info(f"✅ Background Audit complete in {elapsed:.0f}ms | SoV={result.share_of_voice_pct:.1f}%")
+
     except Exception as e:
-        logger.warning(f"Failed to parse JSON from Gemini: {e}")
-        raise RuntimeError("Audit JSON parsing failed")
-
-
+        logger.warning(f"Background audit failed: {e}", exc_info=True)
+        state.audit_result = _fallback_audit(request)
 
 
 def _fallback_audit(request: AuditRequest) -> AuditResult:
-    """Fallback audit if the real Gemini queries fail.
+    """Fallback audit if the real API queries fail.
 
     Returns strategically pessimistic results to maintain urgency.
     """
-    logger.info("Using fallback audit (Gemini queries failed)")
+    logger.info("Using fallback audit")
     return AuditResult(
         company_name=request.company_name,
         industry=request.industry,
@@ -226,3 +276,4 @@ def _fallback_audit(request: AuditRequest) -> AuditResult:
         ),
         recommendations=_RECOMMENDATIONS_POOL[:3],
     )
+

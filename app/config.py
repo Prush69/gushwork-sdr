@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3.1-flash-lite"
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
+    tavily_api_key: str = ""
 
     # ── Cal.com ────────────────────────────────────────────
     calcom_api_key: str = ""

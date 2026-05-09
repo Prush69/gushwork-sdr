@@ -194,14 +194,15 @@ async def _handle_response(
         last_user = transcript[-1].get("content", "")
         _extract_known_fields(last_user, state)
 
+    # ⚡ TRIGGER BACKGROUND AEO AUDIT IF NOT STARTED
+    if state.company_name and state.industry and not state.audit_started:
+        state.audit_started = True
+        from app.tools.audit import run_background_aeo_audit
+        asyncio.create_task(run_background_aeo_audit(state))
+
     # Determine conversation node
     user_text = transcript[-1]["content"] if transcript else ""
     state.current_node = _detect_routing_intent(user_text, state)
-
-    # Check if this is a tool-call node
-    if state.current_node == ConversationNode.AEO_AUDIT and state.company_name and state.industry:
-        await _handle_audit_with_filler(websocket, state, response_id, current_response_id_ref)
-        # Do NOT return here. Fall through to inference so the agent keeps talking.
 
     if state.current_node == ConversationNode.BOOKING:
         # Let Gemini handle booking naturally via tool calls
@@ -380,12 +381,8 @@ def _detect_routing_intent(transcript: str, state: CallState) -> ConversationNod
         return ConversationNode.ICP_QUALIFICATION
     if current == ConversationNode.ICP_QUALIFICATION:
         if state.company_name and state.industry:
-            return ConversationNode.AEO_AUDIT
+            return ConversationNode.BANT_NEED
         return ConversationNode.ICP_QUALIFICATION
-    if current == ConversationNode.AEO_AUDIT:
-        return ConversationNode.AUDIT_RESULTS
-    if current == ConversationNode.AUDIT_RESULTS:
-        return ConversationNode.BANT_NEED
     if current == ConversationNode.BANT_NEED:
         return ConversationNode.BANT_BUDGET
     if current == ConversationNode.BANT_BUDGET:

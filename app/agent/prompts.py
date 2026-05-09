@@ -107,35 +107,6 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
-            "name": "audit_ai_search",
-            "description": (
-                "Run a real-time AEO (Answer Engine Optimization) visibility "
-                "audit on the prospect's company to measure their Share of Voice "
-                "in AI answer engines like ChatGPT, Perplexity, and Gemini."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "company_name": {
-                        "type": "string",
-                        "description": "The prospect's company name.",
-                    },
-                    "industry": {
-                        "type": "string",
-                        "description": "The prospect's industry vertical.",
-                    },
-                    "website_url": {
-                        "type": "string",
-                        "description": "Company website URL if mentioned.",
-                    },
-                },
-                "required": ["company_name", "industry"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "book_calendar_slot",
             "description": (
                 "Book a meeting with the prospect on Cal.com.  Call this the "

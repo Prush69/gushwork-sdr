@@ -190,6 +190,21 @@ def _build_messages(state: CallState | dict[str, Any]) -> list:
 
     # Inject node-specific context
     node_prompt = NODE_PROMPTS.get(state.current_node.value, "")
+    
+    # 💉 INJECT THE PIVOT IF BACKGROUND AUDIT FINISHED
+    if state.audit_result and not state.audit_delivered:
+        data = state.audit_result
+        pivot = f"""
+[SYSTEM ALERT: Your background AEO audit just finished!]
+Results: {data.diagnosis} - Score: {data.share_of_voice_pct}%
+
+YOUR DIRECTIVE: Seamlessly pivot the conversation RIGHT NOW. 
+Acknowledge what the user just said, and then naturally transition by saying something like: 
+"By the way, while you were explaining that, my system finished running a live AI visibility scan on your company..."
+"""
+        node_prompt = node_prompt + "\n\n" + pivot
+        state.audit_delivered = True
+        
     if node_prompt:
         messages.append(
             SystemMessage(content=f"[CURRENT PHASE: {state.current_node.value}]\n{node_prompt}")

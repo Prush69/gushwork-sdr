@@ -192,6 +192,8 @@ class CallState(BaseModel):
 
     # Audit
     audit_result: AuditResult | None = None
+    audit_started: bool = False
+    audit_delivered: bool = False
 
     # Booking
     booking_result: BookingResult | None = None
