@@ -57,13 +57,25 @@ def _parse_conversational_time(time_str: str, timezone: str) -> datetime:
 
     # Handle relative expressions
     if "day after tomorrow" in text:
-        base = now + timedelta(days=2)
+        base = (now + timedelta(days=2)).replace(hour=10, minute=0, second=0, microsecond=0)
     elif "tomorrow" in text:
-        base = now + timedelta(days=1)
+        base = (now + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
     elif "next week" in text:
-        base = now + timedelta(weeks=1)
+        base = (now + timedelta(weeks=1)).replace(hour=10, minute=0, second=0, microsecond=0)
     else:
         base = None
+        # Check for "next <weekday>"
+        import calendar as _cal
+        weekdays = {name.lower(): i for i, name in enumerate(_cal.day_name)}
+        for day_name, day_idx in weekdays.items():
+            if f"next {day_name}" in text:
+                days_ahead = (day_idx - now.weekday()) % 7
+                if days_ahead == 0:
+                    days_ahead = 7
+                base = (now + timedelta(days=days_ahead)).replace(
+                    hour=10, minute=0, second=0, microsecond=0
+                )
+                break
 
     if "morning" in text and not _TIME_RE.search(text):
         base = base or now
@@ -77,7 +89,10 @@ def _parse_conversational_time(time_str: str, timezone: str) -> datetime:
 
     # Try dateutil fuzzy parsing
     try:
-        parsed = dateutil_parser.parse(time_str, fuzzy=True, default=base or now)
+        default_dt = base if base else now.replace(second=0, microsecond=0)
+        parsed = dateutil_parser.parse(time_str, fuzzy=True, default=default_dt)
+        # Zero out seconds for clean times
+        parsed = parsed.replace(second=0, microsecond=0)
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=tz)
         # If parsed time is in the past, bump to next day

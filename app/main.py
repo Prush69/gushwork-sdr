@@ -111,7 +111,13 @@ async def root():
 async def startup():
     logger.info("=" * 60)
     logger.info("  Gushwork SDR Voice Agent — ONLINE")
-    logger.info(f"  Model: {settings.gemini_model}")
+    active_model = (
+        f"groq/{settings.groq_model}"
+        if settings.llm_provider.lower() == "groq"
+        else f"gemini/{settings.gemini_model}"
+    )
+    logger.info(f"  LLM Provider: {settings.llm_provider}")
+    logger.info(f"  Model: {active_model}")
     logger.info(f"  Temperature: {settings.llm_temperature}")
     logger.info(f"  Max Tokens: {settings.llm_max_tokens}")
     logger.info(f"  VAD Silence: {settings.vad_silence_ms}ms")

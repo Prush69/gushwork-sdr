@@ -441,14 +441,23 @@ def _extract_known_fields(transcript: str, state: CallState) -> None:
 
     # Simple company name extraction patterns
     patterns = [
-        r"(?:company|we'?re|i'?m (?:with|from|at))\s+([A-Z][A-Za-z0-9&.\- ]+)",
+        r"(?:company\s+is|we(?:'re| are)|i(?:'m| am) (?:with|from|at))\s+([A-Z][A-Za-z0-9&.\-]+(?:\s+[A-Z][A-Za-z0-9&.\-]+)*)",
         r"called\s+([A-Z][A-Za-z0-9&.\- ]+)",
+        r"(?:^|,\s*)\s*([A-Z][A-Za-z0-9&.\-]+(?:\s+[A-Z][A-Za-z0-9&.\-]+)*)\s*,\s*(?:in |an? )",
     ]
     for pattern in patterns:
-        match = re.search(pattern, transcript)
+        match = re.search(pattern, transcript, re.IGNORECASE)
         if match:
             company = match.group(1).strip(" ,.;:")
-            if company.lower() not in {"a", "an", "the"}:
+            # Truncate at common boundary words to prevent over-capture
+            boundary = re.search(
+                r"\b(?:and|but|or|in|we|who|that|which|for|with|from|to|is|are|do|does)\b",
+                company,
+                re.IGNORECASE,
+            )
+            if boundary:
+                company = company[: boundary.start()].strip(" ,.;:")
+            if company and company.lower() not in {"a", "an", "the", "we", "i", "my", "our"}:
                 state.company_name = company
                 return
 
