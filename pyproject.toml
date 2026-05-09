@@ -14,7 +14,6 @@ dependencies = [
     "langchain-google-genai>=2.1.0",
     "langchain-core>=0.3.0",
     "langsmith>=0.2.0",
-    "retell-ai>=4.0.0",
     "httpx>=0.28.0",
     "python-dateutil>=2.9.0",
     "websockets>=14.0",
