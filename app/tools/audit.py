@@ -229,8 +229,8 @@ Return a strictly formatted JSON object with exactly these keys:
         aeo_score=float(data.get("aeo_score", 0.0)),
         diagnosis=data.get("diagnosis", "Unknown visibility"),
         recommendations=data.get("recommendations", [])[:2]
-    )}", exc_info=True)
-        state.audit_result = _fallback_audit(request)
+    )
+
 
 
 def _fallback_audit(request: AuditRequest) -> AuditResult:
