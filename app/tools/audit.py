@@ -163,150 +163,48 @@ async def run_aeo_audit(request: AuditRequest) -> AuditResult:
         return result
 
 
+import json
+
 async def _real_audit(request: AuditRequest) -> AuditResult:
-    """Core audit logic — fires parallel Gemini queries and analyzes results."""
+    """Core audit logic — fires a single consolidated Gemini query in JSON mode."""
     client = _get_genai_client()
+    
+    prompt = f"""
+You are an expert Answer Engine Optimization (AEO) analyst. 
+Analyze the AI search visibility for {request.company_name} in the {request.industry} industry.
+Evaluate them across 5 dimensions: Brand Presence, Competitor Overlap, Sentiment, Feature Extraction, and Recommendation Frequency.
 
-    # Select query templates
-    industry_key = _industry_template_key(request.industry)
-    templates = _QUERY_TEMPLATES.get(industry_key, _QUERY_TEMPLATES["default"])
+Return a strictly formatted JSON object with exactly these keys:
+"share_of_voice_pct": A float between 0.0 and 100.0.
+"aeo_score": A float between 0.0 and 100.0.
+"diagnosis": A 2-sentence conversational summary of their current AI visibility.
+"recommendations": A list of exactly 3 actionable steps to improve AEO as strings.
+"""
 
-    # Fire all queries in parallel for speed
-    queries = [t.format(industry=request.industry) for t in templates]
-    tasks = [
-        asyncio.wait_for(
-            _query_gemini(client, q),
-            timeout=settings.audit_query_timeout_seconds,
-        )
-        for q in queries
-    ]
-    responses = await asyncio.gather(*tasks, return_exceptions=True)
-
-    # Analyze results
-    company_lower = request.company_name.lower()
-    mentions = 0
-    total_valid = 0
-    mentioned_in = []
-
-    for i, resp in enumerate(responses):
-        if isinstance(resp, Exception):
-            logger.warning("Query %s failed: %s: %s", i + 1, type(resp).__name__, resp)
-            continue
-
-        total_valid += 1
-        if company_lower in resp.lower():
-            mentions += 1
-            mentioned_in.append(queries[i])
-
-    if total_valid == 0:
-        raise RuntimeError("All AEO audit queries failed or timed out")
-
-    # Calculate Share of Voice
-    sov = (mentions / total_valid * 100) if total_valid > 0 else 0.0
-    aeo_score = _calculate_aeo_score(sov, mentions, total_valid)
-
-    # Generate diagnosis
-    diagnosis = _generate_diagnosis(
-        request.company_name,
-        request.industry,
-        sov,
-        mentions,
-        total_valid,
-        mentioned_in,
-    )
-
-    # Select relevant recommendations
-    recommendations = _select_recommendations(sov, mentions)
-
-    return AuditResult(
-        company_name=request.company_name,
-        industry=request.industry,
-        share_of_voice_pct=round(sov, 1),
-        aeo_score=round(aeo_score, 1),
-        diagnosis=diagnosis,
-        recommendations=recommendations,
-    )
-
-
-async def _query_gemini(client: genai.Client, query: str) -> str:
-    """Send a single query to Gemini and return the text response."""
     response = await asyncio.to_thread(
         client.models.generate_content,
         model=settings.gemini_model,
-        contents=query,
+        contents=prompt,
+        config={
+            "response_mime_type": "application/json",
+        }
     )
-    return response.text or ""
-
-
-def _calculate_aeo_score(sov: float, mentions: int, total: int) -> float:
-    """Calculate a 0-100 AEO score based on visibility metrics."""
-    if total == 0:
-        return 0.0
-
-    # Base score from Share of Voice (0-60 points)
-    sov_score = min(sov * 0.6, 60.0)
-
-    # Consistency bonus — appearing in multiple queries (0-40 points)
-    consistency = (mentions / total) * 40
-
-    return min(sov_score + consistency, 100.0)
-
-
-def _generate_diagnosis(
-    company: str,
-    industry: str,
-    sov: float,
-    mentions: int,
-    total: int,
-    mentioned_in: list[str],
-) -> str:
-    """Generate a human-readable diagnosis based on audit results."""
-    if sov == 0:
-        return (
-            f"{company} has zero presence in AI-generated answers. "
-            f"Across {total} industry-relevant queries to AI search engines, "
-            f"your company was not mentioned a single time. "
-            f"When decision-makers ask AI assistants about {industry} solutions, "
-            f"your competitors are being recommended — you're completely invisible."
+    
+    try:
+        data = json.loads(response.text)
+        return AuditResult(
+            company_name=request.company_name,
+            industry=request.industry,
+            share_of_voice_pct=float(data.get("share_of_voice_pct", 0.0)),
+            aeo_score=float(data.get("aeo_score", 0.0)),
+            diagnosis=data.get("diagnosis", "We couldn't find much visibility for you right now."),
+            recommendations=data.get("recommendations", ["Implement AEO basics."])[:3]
         )
-    elif sov < 20:
-        return (
-            f"{company} appeared in {mentions} out of {total} AI-generated answers "
-            f"({sov:.1f}% Share of Voice). This is critically low — your competitors "
-            f"dominate the AI recommendation space for {industry}. "
-            f"Without intervention, you'll continue losing prospects to companies "
-            f"that AI models actively recommend."
-        )
-    elif sov < 50:
-        return (
-            f"{company} has moderate visibility in AI answers — appearing in "
-            f"{mentions} out of {total} queries ({sov:.1f}% Share of Voice). "
-            f"There's room to significantly increase your AI search presence "
-            f"in the {industry} space with targeted AEO optimization."
-        )
-    else:
-        return (
-            f"{company} has strong AI visibility — appearing in {mentions} out of "
-            f"{total} queries ({sov:.1f}% Share of Voice). You're well-positioned "
-            f"in the {industry} space, but ongoing optimization is needed to "
-            f"maintain and grow your advantage."
-        )
+    except Exception as e:
+        logger.warning(f"Failed to parse JSON from Gemini: {e}")
+        raise RuntimeError("Audit JSON parsing failed")
 
 
-def _select_recommendations(sov: float, mentions: int) -> list[str]:
-    """Select the most relevant recommendations based on audit results."""
-    if sov == 0:
-        # Zero visibility — foundational recommendations
-        return _RECOMMENDATIONS_POOL[:4]
-    elif sov < 20:
-        # Low visibility — content + authority building
-        return _RECOMMENDATIONS_POOL[2:6]
-    elif sov < 50:
-        # Moderate — optimization + competitive positioning
-        return _RECOMMENDATIONS_POOL[4:8]
-    else:
-        # Strong — maintenance + growth
-        return _RECOMMENDATIONS_POOL[6:10]
 
 
 def _fallback_audit(request: AuditRequest) -> AuditResult:

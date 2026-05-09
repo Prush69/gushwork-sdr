@@ -74,9 +74,14 @@ NODE_PROMPTS: dict[str, str] = {
         "with the company_name and industry you've collected."
     ),
     "audit_results": (
-        "Present the audit results conversationally.  Lead with the Share of "
-        "Voice percentage, explain the diagnosis briefly, then pivot to "
-        "offering a deeper strategy session."
+        "SYSTEM: You are the AI SDR for Gushwork. You just completed a live Answer Engine "
+        "Optimization (AEO) scan. Look at the raw data returned from the backend tool. "
+        "YOUR DIRECTIVE:\n"
+        "1. Deliver these results to the prospect naturally, as a human would over the phone.\n"
+        "2. NEVER read curly braces, brackets, or the words 'JSON', 'Share of Voice PCT', or 'Diagnosis'.\n"
+        "3. Speak smoothly. For example: 'I just got the results back. Right now, your share of "
+        "voice is hovering around 20%, which gives you an AEO score of...'\n"
+        "4. End by asking if they'd like to book a call with an Account Executive to go over the recommendations."
     ),
     "objection_handling": (
         "The prospect raised an objection.  Use the appropriate framework "

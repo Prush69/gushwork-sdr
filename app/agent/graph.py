@@ -239,7 +239,7 @@ async def llm_inference(state: CallState | dict[str, Any]) -> dict[str, Any]:
     t0 = time.perf_counter()
     response = await llm_with_tools.ainvoke(messages)
     latency_ms = (time.perf_counter() - t0) * 1000
-    logger.info(f"Gemini inference: {latency_ms:.0f}ms")
+    logger.info(f"Groq inference: {latency_ms:.0f}ms")
 
     # Check for tool calls
     tool_calls = getattr(response, "tool_calls", None) or []
@@ -275,7 +275,7 @@ async def llm_inference_stream(state: CallState | dict[str, Any]) -> AsyncIterat
     async for chunk in llm_with_tools.astream(messages):
         if first_token:
             ttfb = (time.perf_counter() - t0) * 1000
-            logger.info(f"Gemini TTFB: {ttfb:.0f}ms")
+            logger.info(f"Groq TTFB: {ttfb:.0f}ms")
             first_token = False
 
         # Check for tool calls in the stream
@@ -290,7 +290,7 @@ async def llm_inference_stream(state: CallState | dict[str, Any]) -> AsyncIterat
             yield content
 
     total = (time.perf_counter() - t0) * 1000
-    logger.info(f"Gemini total stream: {total:.0f}ms")
+    logger.info(f"Groq total stream: {total:.0f}ms")
 
 
 # ═══════════════════════════════════════════════════════════

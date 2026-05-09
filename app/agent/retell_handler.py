@@ -201,58 +201,61 @@ async def _handle_response(
     # Check if this is a tool-call node
     if state.current_node == ConversationNode.AEO_AUDIT and state.company_name and state.industry:
         await _handle_audit_with_filler(websocket, state, response_id, current_response_id_ref)
-        return
+        # Do NOT return here. Fall through to inference so the agent keeps talking.
 
     if state.current_node == ConversationNode.BOOKING:
         # Let Gemini handle booking naturally via tool calls
         pass
 
-    # Build messages for Gemini
-    try:
-        full_response = ""
-        async for token in llm_inference_stream(state):
-            # Check for barge-in
-            if current_response_id_ref() != response_id:
-                logger.info(f"🛑 Barge-in detected, abandoning response_id={response_id}")
+    # Loop to allow continuous generation after a tool call
+    while True:
+        try:
+            full_response = ""
+            async for token in llm_inference_stream(state):
+                # Check for barge-in
+                if current_response_id_ref() != response_id:
+                    logger.info(f"🛑 Barge-in detected, abandoning response_id={response_id}")
+                    return
+
+                if token.startswith("__TOOL_CALL__:"):
+                    # Tool call detected during streaming
+                    tool_name = token.split(":", 1)[1]
+                    await _handle_tool_call_during_stream(
+                        websocket, state, response_id, tool_name, current_response_id_ref
+                    )
+                    break # Break inner loop, restart inference
+
+                full_response += token
+                # Stream each token to Retell
+                await websocket.send_json({
+                    "response_type": "response",
+                    "response_id": response_id,
+                    "content": token,
+                    "content_complete": False,
+                    "end_call": False,
+                })
+            else:
+                # Loop naturally finished without a break
+                state.last_bot_utterance = full_response
+                await websocket.send_json({
+                    "response_type": "response",
+                    "response_id": response_id,
+                    "content": "",
+                    "content_complete": True,
+                    "end_call": state.current_node == ConversationNode.TERMINAL,
+                })
                 return
 
-            if token.startswith("__TOOL_CALL__:"):
-                # Tool call detected during streaming
-                tool_name = token.split(":", 1)[1]
-                await _handle_tool_call_during_stream(
-                    websocket, state, response_id, tool_name, current_response_id_ref
-                )
-                return
-
-            full_response += token
-            # Stream each token to Retell
+        except Exception as e:
+            logger.error(f"Response generation error: {e}", exc_info=True)
             await websocket.send_json({
                 "response_type": "response",
                 "response_id": response_id,
-                "content": token,
-                "content_complete": False,
+                "content": "I apologize, could you repeat that?",
+                "content_complete": True,
                 "end_call": False,
             })
-
-        # Signal completion
-        state.last_bot_utterance = full_response
-        await websocket.send_json({
-            "response_type": "response",
-            "response_id": response_id,
-            "content": "",
-            "content_complete": True,
-            "end_call": state.current_node == ConversationNode.TERMINAL,
-        })
-
-    except Exception as e:
-        logger.error(f"Response generation error: {e}", exc_info=True)
-        await websocket.send_json({
-            "response_type": "response",
-            "response_id": response_id,
-            "content": "I apologize, could you repeat that?",
-            "content_complete": True,
-            "end_call": False,
-        })
+            return
 
 
 # ═══════════════════════════════════════════════════════════
@@ -283,7 +286,7 @@ async def _handle_audit_with_filler(
         "response_type": "response",
         "response_id": response_id,
         "content": filler,
-        "content_complete": True,
+        "content_complete": False,
         "end_call": False,
     })
 
@@ -334,7 +337,7 @@ async def _handle_tool_call_during_stream(
         "response_type": "response",
         "response_id": response_id,
         "content": filler,
-        "content_complete": True,
+        "content_complete": False,
         "end_call": False,
     })
 
@@ -441,7 +444,7 @@ def _extract_known_fields(transcript: str, state: CallState) -> None:
 
     # Simple company name extraction patterns
     patterns = [
-        r"(?:company\s+is|we(?:'re| are)|i(?:'m| am) (?:with|from|at))\s+([A-Z][A-Za-z0-9&.\-]+(?:\s+[A-Z][A-Za-z0-9&.\-]+)*)",
+        r"(?i)(?:company|we(?:\s+are|'re)|i(?:\s+am|'m)\s+(?:with|from|at)|at)\s+([A-Z][A-Za-z0-9&.\- ]+)",
         r"called\s+([A-Z][A-Za-z0-9&.\- ]+)",
         r"(?:^|,\s*)\s*([A-Z][A-Za-z0-9&.\-]+(?:\s+[A-Z][A-Za-z0-9&.\-]+)*)\s*,\s*(?:in |an? )",
     ]
