@@ -236,23 +236,30 @@ async def _handle_response(
 
                 full_response += token
                 # Stream each token to Retell
-                await websocket.send_json({
-                    "response_type": "response",
-                    "response_id": response_id,
-                    "content": token,
-                    "content_complete": False,
-                    "end_call": False,
-                })
+                try:
+                    await websocket.send_json({
+                        "response_type": "response",
+                        "response_id": response_id,
+                        "content": token,
+                        "content_complete": False,
+                        "end_call": False,
+                    })
+                except (Exception, RuntimeError):
+                    logger.info(f"🔌 WebSocket disconnected mid-stream for {state.call_id}")
+                    return
             else:
                 # Loop naturally finished without a break
                 state.last_bot_utterance = full_response
-                await websocket.send_json({
-                    "response_type": "response",
-                    "response_id": response_id,
-                    "content": "",
-                    "content_complete": True,
-                    "end_call": state.current_node == ConversationNode.TERMINAL,
-                })
+                try:
+                    await websocket.send_json({
+                        "response_type": "response",
+                        "response_id": response_id,
+                        "content": "",
+                        "content_complete": True,
+                        "end_call": state.current_node == ConversationNode.TERMINAL,
+                    })
+                except (Exception, RuntimeError):
+                    logger.info(f"🔌 WebSocket disconnected at end of stream for {state.call_id}")
                 return
 
         except Exception as e:
@@ -465,7 +472,13 @@ def _extract_known_fields(transcript: str, state: CallState) -> None:
             )
             if boundary:
                 company = company[: boundary.start()].strip(" ,.;:")
-            if company and company.lower() not in {"a", "an", "the", "we", "i", "my", "our"}:
+            
+            # Filter out junk captures
+            invalid = {
+                "a", "an", "the", "we", "i", "my", "our", "your", "support", 
+                "portal", "company", "industry", "here", "is", "startup"
+            }
+            if len(company) > 2 and company.lower() not in invalid:
                 state.company_name = company
                 return
 
