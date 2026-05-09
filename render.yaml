@@ -33,5 +33,13 @@ services:
           type: web
           name: gushwork-sdr
           property: host   # auto-resolves to https://gushwork-sdr.onrender.com
+      - key: LLM_CONTEXT_MESSAGES
+        value: "16"
+      - key: CALL_STATE_TTL_SECONDS
+        value: "7200"
+      - key: AUDIT_QUERY_TIMEOUT_SECONDS
+        value: "20"
+      - key: AUDIT_CACHE_TTL_SECONDS
+        value: "3600"
       - key: PYTHON_VERSION
         value: "3.12.0"

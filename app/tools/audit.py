@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any
 
 from google import genai
 from langsmith import traceable
@@ -28,6 +27,9 @@ from app.config import settings
 from app.schemas import AuditRequest, AuditResult
 
 logger = logging.getLogger(__name__)
+_genai_client: genai.Client | None = None
+_AUDIT_CACHE_MAX_SIZE = 128
+_audit_cache: dict[tuple[str, str, str], tuple[float, AuditResult]] = {}
 
 # ── Query templates per industry ───────────────────────────
 # Each template generates a question that an AI user would ask.
@@ -70,6 +72,59 @@ _RECOMMENDATIONS_POOL = [
 ]
 
 
+def _get_genai_client() -> genai.Client:
+    """Reuse the Gemini client across audit requests."""
+    global _genai_client
+    if _genai_client is None:
+        _genai_client = genai.Client(api_key=settings.gemini_api_key)
+    return _genai_client
+
+
+def _audit_cache_key(request: AuditRequest) -> tuple[str, str, str]:
+    return (
+        request.company_name.casefold().strip(),
+        request.industry.casefold().strip(),
+        (request.website_url or "").casefold().strip(),
+    )
+
+
+def _get_cached_audit(request: AuditRequest) -> AuditResult | None:
+    ttl = max(settings.audit_cache_ttl_seconds, 0)
+    if ttl == 0:
+        return None
+
+    cache_entry = _audit_cache.get(_audit_cache_key(request))
+    if not cache_entry:
+        return None
+
+    cached_at, result = cache_entry
+    if time.time() - cached_at <= ttl:
+        logger.info("AEO audit cache hit for %s", request.company_name)
+        return result
+
+    _audit_cache.pop(_audit_cache_key(request), None)
+    return None
+
+
+def _store_cached_audit(request: AuditRequest, result: AuditResult) -> None:
+    if settings.audit_cache_ttl_seconds <= 0:
+        return
+
+    if len(_audit_cache) >= _AUDIT_CACHE_MAX_SIZE:
+        oldest_key = min(_audit_cache, key=lambda key: _audit_cache[key][0])
+        _audit_cache.pop(oldest_key, None)
+    _audit_cache[_audit_cache_key(request)] = (time.time(), result)
+
+
+def _industry_template_key(industry: str) -> str:
+    text = industry.casefold()
+    if "saas" in text or "software" in text:
+        return "saas"
+    if "ecommerce" in text or "e-commerce" in text:
+        return "ecommerce"
+    return "default"
+
+
 @traceable(name="aeo_audit", run_type="tool")
 async def run_aeo_audit(request: AuditRequest) -> AuditResult:
     """Execute a REAL AEO visibility audit using Gemini.
@@ -80,8 +135,19 @@ async def run_aeo_audit(request: AuditRequest) -> AuditResult:
     logger.info(f"🔍 Running REAL AEO audit for: {request.company_name} ({request.industry})")
     t0 = time.perf_counter()
 
+    cached = _get_cached_audit(request)
+    if cached:
+        return cached
+
+    if not settings.gemini_api_key:
+        logger.warning("Gemini API key not configured, using fallback audit")
+        result = _fallback_audit(request)
+        _store_cached_audit(request, result)
+        return result
+
     try:
         result = await _real_audit(request)
+        _store_cached_audit(request, result)
         elapsed = (time.perf_counter() - t0) * 1000
         logger.info(
             f"✅ Audit complete in {elapsed:.0f}ms | "
@@ -92,20 +158,28 @@ async def run_aeo_audit(request: AuditRequest) -> AuditResult:
 
     except Exception as e:
         logger.warning(f"Real audit failed, using fallback: {e}", exc_info=True)
-        return _fallback_audit(request)
+        result = _fallback_audit(request)
+        _store_cached_audit(request, result)
+        return result
 
 
 async def _real_audit(request: AuditRequest) -> AuditResult:
     """Core audit logic — fires parallel Gemini queries and analyzes results."""
-    client = genai.Client(api_key=settings.gemini_api_key)
+    client = _get_genai_client()
 
     # Select query templates
-    industry_key = request.industry.lower().strip()
+    industry_key = _industry_template_key(request.industry)
     templates = _QUERY_TEMPLATES.get(industry_key, _QUERY_TEMPLATES["default"])
 
     # Fire all queries in parallel for speed
     queries = [t.format(industry=request.industry) for t in templates]
-    tasks = [_query_gemini(client, q) for q in queries]
+    tasks = [
+        asyncio.wait_for(
+            _query_gemini(client, q),
+            timeout=settings.audit_query_timeout_seconds,
+        )
+        for q in queries
+    ]
     responses = await asyncio.gather(*tasks, return_exceptions=True)
 
     # Analyze results
@@ -116,13 +190,16 @@ async def _real_audit(request: AuditRequest) -> AuditResult:
 
     for i, resp in enumerate(responses):
         if isinstance(resp, Exception):
-            logger.warning(f"Query {i+1} failed: {resp}")
+            logger.warning("Query %s failed: %s: %s", i + 1, type(resp).__name__, resp)
             continue
 
         total_valid += 1
         if company_lower in resp.lower():
             mentions += 1
             mentioned_in.append(queries[i])
+
+    if total_valid == 0:
+        raise RuntimeError("All AEO audit queries failed or timed out")
 
     # Calculate Share of Voice
     sov = (mentions / total_valid * 100) if total_valid > 0 else 0.0
@@ -155,7 +232,7 @@ async def _query_gemini(client: genai.Client, query: str) -> str:
     """Send a single query to Gemini and return the text response."""
     response = await asyncio.to_thread(
         client.models.generate_content,
-        model="gemini-3-flash-preview",
+        model=settings.gemini_model,
         contents=query,
     )
     return response.text or ""

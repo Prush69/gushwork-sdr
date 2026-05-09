@@ -12,11 +12,10 @@ from __future__ import annotations
 import logging
 
 import httpx
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
-from rich import box
 
 from app.config import settings
 from app.schemas import CallState, LeadSyncRequest, LeadSyncResult
@@ -103,7 +102,12 @@ def _print_crm_payload(request: LeadSyncRequest) -> None:
         audit_table.add_column("Metric", style="dim", width=20)
         audit_table.add_column("Value", style="bright_white")
 
-        sov_color = "red" if audit.share_of_voice_pct < 10 else "yellow" if audit.share_of_voice_pct < 50 else "green"
+        if audit.share_of_voice_pct < 10:
+            sov_color = "red"
+        elif audit.share_of_voice_pct < 50:
+            sov_color = "yellow"
+        else:
+            sov_color = "green"
         audit_table.add_row(
             "Share of Voice",
             f"[bold {sov_color}]{audit.share_of_voice_pct:.1f}%[/]",

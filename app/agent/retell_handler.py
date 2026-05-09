@@ -1,281 +1,349 @@
-"""Retell AI webhook handler — manages the full call lifecycle.
+"""Retell AI Custom LLM — WebSocket Handler.
 
-This module bridges Retell's WebRTC voice infrastructure with the LangGraph
-state machine.  Supports both:
-- Standard JSON responses (for lifecycle events)
-- SSE streaming responses (Improvement 1: sub-100ms TTFB)
+Retell connects to our server via WebSocket (not HTTP).
+Protocol: wss://our-server/llm-websocket/{call_id}
+
+Message types FROM Retell:
+  - call_details: initial call metadata
+  - ping_pong: keep-alive
+  - update_only: real-time transcript (no response needed)
+  - response_required: user finished speaking → we must respond
+  - reminder_required: user went silent → nudge them
+
+Message types TO Retell:
+  - config: optional initial configuration
+  - response: text to speak (supports streaming via content_complete=False)
+  - ping_pong: echo back timestamps
 """
 
 from __future__ import annotations
 
-import hashlib
-import hmac
+import asyncio
 import json
 import logging
+import re
 import time
-from typing import Any, AsyncIterator
+from typing import Any
 
+from fastapi import WebSocket, WebSocketDisconnect
 from langsmith import traceable
 
-from app.agent.graph import agent_graph, llm_inference_stream, _build_messages, get_llm
 from app.config import settings
 from app.schemas import CallState, ConversationNode
 
 logger = logging.getLogger(__name__)
 
-# In-memory call state store (swap for Redis in production)
+# ── In-memory call state ──────────────────────────────────
 _active_calls: dict[str, CallState] = {}
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+_INDUSTRY_ALIASES: tuple[tuple[str, str], ...] = (
+    ("b2b saas", "B2B SaaS"),
+    ("saas", "SaaS"),
+    ("software", "Software"),
+    ("ecommerce", "eCommerce"),
+    ("e-commerce", "eCommerce"),
+    ("retail", "Retail"),
+    ("fintech", "FinTech"),
+    ("healthcare", "Healthcare"),
+    ("agency", "Agency"),
+    ("marketing", "Marketing"),
+)
 
 
-def verify_retell_signature(payload: bytes, signature: str) -> bool:
-    """Verify the HMAC-SHA256 signature from Retell's webhook."""
-    if not settings.retell_webhook_secret:
-        logger.warning("Retell webhook secret not configured — skipping verification")
-        return True
-
-    expected = hmac.new(
-        settings.retell_webhook_secret.encode(),
-        payload,
-        hashlib.sha256,
-    ).hexdigest()
-
-    return hmac.compare_digest(expected, signature)
+# ═══════════════════════════════════════════════════════════
+# WebSocket Handler — The Core Loop
+# ═══════════════════════════════════════════════════════════
 
 
-def get_or_create_call_state(call_id: str) -> CallState:
-    """Get existing call state or create a fresh one."""
-    if call_id not in _active_calls:
-        _active_calls[call_id] = CallState(
-            call_id=call_id,
-            current_node=ConversationNode.GREETING,
-            call_start_epoch=time.time(),
-        )
-    return _active_calls[call_id]
+async def handle_websocket(websocket: WebSocket, call_id: str) -> None:
+    """Main WebSocket handler for Retell Custom LLM.
 
-
-def destroy_call_state(call_id: str) -> CallState | None:
-    """Remove and return the call state on disconnect."""
-    state = _active_calls.pop(call_id, None)
-    if state:
-        state.call_end_epoch = time.time()
-    return state
-
-
-@traceable(name="handle_retell_event", run_type="chain")
-async def handle_retell_event(event: dict[str, Any]) -> dict[str, Any]:
-    """Main dispatcher for Retell webhook events.
-
-    Events:
-    - call_started: Initialize state, return greeting config
-    - call_ended: Trigger CRM sync, cleanup
-    - agent_response_required: User spoke → LLM inference → response
-    - ping: Health check
+    This is the bidirectional connection Retell opens when a call starts.
+    We receive transcripts and send back text for TTS.
     """
-    event_type = event.get("event", "")
-    call_id = event.get("call_id", event.get("call", {}).get("call_id", ""))
+    await websocket.accept()
+    logger.info(f"🔌 WebSocket connected: {call_id}")
 
-    if event_type == "call_started":
-        return await _handle_call_started(call_id, event)
-    elif event_type == "call_ended":
-        return await _handle_call_ended(call_id, event)
-    elif event_type == "agent_response_required":
-        return await _handle_response_required(call_id, event)
-    elif event_type == "ping":
-        return {"response_type": "pong"}
-    else:
-        logger.warning(f"Unknown Retell event type: {event_type}")
-        return {"response_type": "ack"}
+    # Create call state
+    state = CallState(
+        call_id=call_id,
+        current_node=ConversationNode.GREETING,
+        call_start_epoch=time.time(),
+    )
+    _active_calls[call_id] = state
 
+    # Track the latest response_id to handle barge-in
+    current_response_id = 0
 
-async def _handle_call_started(call_id: str, event: dict) -> dict:
-    """Phase 1 — Connection & Zero-Latency Cold Start."""
-    state = get_or_create_call_state(call_id)
-    logger.info(f"Call started: {call_id}")
-
-    return {
-        "response_type": "agent_response",
-        "response": {
-            "content": (
-                "Thanks for calling Gushwork. Are you calling for support, "
-                "or looking to generate more inbound leads?"
-            ),
-        },
-    }
-
-
-async def _handle_call_ended(call_id: str, event: dict) -> dict:
-    """Phase 7 — Terminal State & CRM Handoff."""
-    state = destroy_call_state(call_id)
-
-    if state:
-        logger.info(
-            f"Call ended: {call_id} | "
-            f"duration={state.call_end_epoch - state.call_start_epoch:.1f}s | "
-            f"node={state.current_node.value}"
-        )
-        from app.tools.crm import fire_crm_sync
-        await fire_crm_sync(state)
-
-    return {"response_type": "ack"}
-
-
-@traceable(name="response_required", run_type="chain")
-async def _handle_response_required(call_id: str, event: dict) -> dict:
-    """Phase 3 → 5 — STT transcript → LLM inference → TTS response.
-
-    The hot path.  Traced end-to-end by LangSmith.
-    """
-    state = get_or_create_call_state(call_id)
-    transcript = event.get("transcript", "")
-
-    # Handle barge-in context (Phase 6)
-    if event.get("interrupted", False):
-        state.interrupted_at_char = event.get("interrupted_at_char")
-        logger.info(f"Barge-in detected on call {call_id}")
-
-    # Inject user transcript into state
-    if transcript:
-        state.messages.append({"role": "user", "content": transcript})
-        state.transcript_segments.append(transcript)
-
-    # Determine current node from intent
-    intent = _detect_routing_intent(transcript, state)
-    state.current_node = intent
-
-    # Run LangGraph
-    t0 = time.perf_counter()
     try:
-        result = await agent_graph.ainvoke(state.model_dump())
-
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-        logger.info(f"Full pipeline: {elapsed_ms:.0f}ms | node={state.current_node.value}")
-
-        # Extract response
-        response_text = ""
-        if result.get("messages"):
-            for msg in reversed(result["messages"]):
-                if msg.get("role") == "assistant" and msg.get("content"):
-                    response_text = msg["content"]
-                    break
-
-        # Update state
-        state.messages = result.get("messages", state.messages)
-        state.last_bot_utterance = result.get("last_bot_utterance", "")
-        state.audit_result = result.get("audit_result", state.audit_result)
-        state.booking_result = result.get("booking_result", state.booking_result)
-        state.current_node = ConversationNode(
-            result.get("current_node", state.current_node)
-        )
-
-        if result.get("company_name"):
-            state.company_name = result["company_name"]
-        if result.get("industry"):
-            state.industry = result["industry"]
-        if result.get("prospect_name"):
-            state.prospect_name = result["prospect_name"]
-
-        return {
-            "response_type": "agent_response",
-            "response": {"content": response_text},
-        }
-
-    except Exception as e:
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-        logger.error(
-            f"Pipeline error on call {call_id} ({elapsed_ms:.0f}ms): {e}",
-            exc_info=True,
-        )
-        return {
-            "response_type": "agent_response",
-            "response": {
-                "content": (
-                    "I apologize, I'm having a brief technical issue.  "
-                    "Could you repeat that?"
-                ),
+        # Step 1: Send config
+        await websocket.send_json({
+            "response_type": "config",
+            "config": {
+                "auto_reconnect": True,
+                "call_details": True,
             },
-        }
+        })
+
+        # Step 2: Send greeting (first message)
+        await websocket.send_json({
+            "response_type": "response",
+            "response_id": 0,
+            "content": (
+                "Thanks for calling Gushwork! Are you calling for support, "
+                "or are you looking to generate more inbound leads?"
+            ),
+            "content_complete": True,
+            "end_call": False,
+        })
+
+        # Step 3: Listen for messages
+        async for data in websocket.iter_json():
+            interaction_type = data.get("interaction_type", "")
+
+            if interaction_type == "call_details":
+                logger.info(f"📞 Call details received for {call_id}")
+                continue
+
+            if interaction_type == "ping_pong":
+                await websocket.send_json({
+                    "response_type": "ping_pong",
+                    "timestamp": data.get("timestamp", 0),
+                })
+                continue
+
+            if interaction_type == "update_only":
+                # Real-time transcript update — extract fields passively
+                transcript = data.get("transcript", [])
+                if transcript:
+                    last_utterance = transcript[-1].get("content", "")
+                    _extract_known_fields(last_utterance, state)
+                continue
+
+            if interaction_type in ("response_required", "reminder_required"):
+                response_id = data.get("response_id", 0)
+                current_response_id = response_id
+                transcript = data.get("transcript", [])
+
+                logger.info(
+                    f"💬 {interaction_type} | response_id={response_id} | "
+                    f"last='{transcript[-1]['content'][:80]}...'" if transcript else f"💬 {interaction_type} (empty)"
+                )
+
+                # Process and stream response
+                await _handle_response(
+                    websocket=websocket,
+                    state=state,
+                    transcript=transcript,
+                    response_id=response_id,
+                    is_reminder=(interaction_type == "reminder_required"),
+                    current_response_id_ref=lambda: current_response_id,
+                )
+
+    except WebSocketDisconnect:
+        logger.info(f"📴 WebSocket disconnected: {call_id}")
+    except Exception as e:
+        logger.error(f"❌ WebSocket error for {call_id}: {e}", exc_info=True)
+        try:
+            await websocket.close(1011, "Server error")
+        except Exception:
+            pass
+    finally:
+        # Call ended — trigger CRM sync
+        state.call_end_epoch = time.time()
+        _active_calls.pop(call_id, None)
+        duration = state.call_end_epoch - state.call_start_epoch
+        logger.info(
+            f"📊 Call ended: {call_id} | "
+            f"duration={duration:.1f}s | node={state.current_node.value}"
+        )
+        asyncio.create_task(_safe_fire_crm_sync(state))
 
 
 # ═══════════════════════════════════════════════════════════
-# SSE Streaming Handler (Improvement 1)
+# Response Generation
 # ═══════════════════════════════════════════════════════════
 
 
-async def handle_retell_event_stream(event: dict[str, Any]) -> AsyncIterator[str]:
-    """Streaming variant — yields SSE events with sub-100ms TTFB.
+@traceable(name="handle_response", run_type="chain")
+async def _handle_response(
+    websocket: WebSocket,
+    state: CallState,
+    transcript: list[dict],
+    response_id: int,
+    is_reminder: bool,
+    current_response_id_ref: Any,
+) -> None:
+    """Generate a response and stream it back to Retell.
 
-    Instead of waiting for Gemini to finish the full response, we pipe
-    tokens directly to Retell's TTS engine as they're generated.
-    Each SSE event is a JSON fragment that Retell can ingest immediately.
+    Handles:
+    - Regular conversation (streamed token by token)
+    - Tool calls (audit, booking) with filler words
+    - Barge-in (abandon response if response_id changes)
+    - Reminders (nudge silent users)
     """
-    event_type = event.get("event", "")
-    call_id = event.get("call_id", event.get("call", {}).get("call_id", ""))
+    from app.agent.graph import get_llm_with_tools, llm_inference_stream
+    from app.agent.prompts import SYSTEM_PROMPT, NODE_PROMPTS
 
-    # Only agent_response_required benefits from streaming
-    if event_type != "agent_response_required":
-        result = await handle_retell_event(event)
-        yield json.dumps(result)
+    # Sync Retell transcript into our state
+    state.messages = _retell_transcript_to_messages(transcript)
+
+    # Extract known fields from latest user utterance
+    if transcript:
+        last_user = transcript[-1].get("content", "")
+        _extract_known_fields(last_user, state)
+
+    # Determine conversation node
+    user_text = transcript[-1]["content"] if transcript else ""
+    state.current_node = _detect_routing_intent(user_text, state)
+
+    # Check if this is a tool-call node
+    if state.current_node == ConversationNode.AEO_AUDIT and state.company_name and state.industry:
+        await _handle_audit_with_filler(websocket, state, response_id, current_response_id_ref)
         return
 
-    state = get_or_create_call_state(call_id)
-    transcript = event.get("transcript", "")
+    if state.current_node == ConversationNode.BOOKING:
+        # Let Gemini handle booking naturally via tool calls
+        pass
 
-    if event.get("interrupted", False):
-        state.interrupted_at_char = event.get("interrupted_at_char")
-
-    if transcript:
-        state.messages.append({"role": "user", "content": transcript})
-        state.transcript_segments.append(transcript)
-
-    intent = _detect_routing_intent(transcript, state)
-    state.current_node = intent
-
-    # Stream tokens from Gemini
-    full_response = ""
+    # Build messages for Gemini
     try:
+        full_response = ""
         async for token in llm_inference_stream(state):
+            # Check for barge-in
+            if current_response_id_ref() != response_id:
+                logger.info(f"🛑 Barge-in detected, abandoning response_id={response_id}")
+                return
+
             if token.startswith("__TOOL_CALL__:"):
-                # Tool call detected — fall back to non-streaming path
-                result = await agent_graph.ainvoke(state.model_dump())
-                response_text = ""
-                if result.get("messages"):
-                    for msg in reversed(result["messages"]):
-                        if msg.get("role") == "assistant" and msg.get("content"):
-                            response_text = msg["content"]
-                            break
-                state.messages = result.get("messages", state.messages)
-                state.last_bot_utterance = result.get("last_bot_utterance", "")
-                state.audit_result = result.get("audit_result", state.audit_result)
-                state.booking_result = result.get("booking_result", state.booking_result)
-                yield json.dumps({
-                    "response_type": "agent_response",
-                    "response": {"content": response_text},
-                })
+                # Tool call detected during streaming
+                tool_name = token.split(":", 1)[1]
+                await _handle_tool_call_during_stream(
+                    websocket, state, response_id, tool_name, current_response_id_ref
+                )
                 return
 
             full_response += token
-            # Yield each token as an SSE data chunk
-            yield json.dumps({
-                "response_type": "agent_response_stream",
-                "response": {"content_delta": token},
+            # Stream each token to Retell
+            await websocket.send_json({
+                "response_type": "response",
+                "response_id": response_id,
+                "content": token,
+                "content_complete": False,
+                "end_call": False,
             })
 
-        # Final message — signal stream complete
-        state.messages.append({"role": "assistant", "content": full_response})
+        # Signal completion
         state.last_bot_utterance = full_response
-        yield json.dumps({
-            "response_type": "agent_response_stream_end",
-            "response": {"content": full_response},
+        await websocket.send_json({
+            "response_type": "response",
+            "response_id": response_id,
+            "content": "",
+            "content_complete": True,
+            "end_call": state.current_node == ConversationNode.TERMINAL,
         })
 
     except Exception as e:
-        logger.error(f"Stream error on call {call_id}: {e}", exc_info=True)
-        yield json.dumps({
-            "response_type": "agent_response",
-            "response": {
-                "content": "I apologize, could you repeat that?"
-            },
+        logger.error(f"Response generation error: {e}", exc_info=True)
+        await websocket.send_json({
+            "response_type": "response",
+            "response_id": response_id,
+            "content": "I apologize, could you repeat that?",
+            "content_complete": True,
+            "end_call": False,
         })
+
+
+# ═══════════════════════════════════════════════════════════
+# Tool Execution with Filler Words
+# ═══════════════════════════════════════════════════════════
+
+
+async def _handle_audit_with_filler(
+    websocket: WebSocket,
+    state: CallState,
+    response_id: int,
+    current_response_id_ref: Any,
+) -> None:
+    """Run the AEO audit while speaking a filler phrase.
+
+    This masks the API latency — the user hears "Let me check your
+    AI visibility real quick..." while we run 5 parallel Gemini queries.
+    """
+    from app.tools.audit import run_aeo_audit
+    from app.schemas import AuditRequest
+
+    # Send filler word immediately
+    filler = (
+        f"Great, let me run a quick AI visibility check on {state.company_name} "
+        f"in the {state.industry} space. Just one moment..."
+    )
+    await websocket.send_json({
+        "response_type": "response",
+        "response_id": response_id,
+        "content": filler,
+        "content_complete": True,
+        "end_call": False,
+    })
+
+    # Run audit in background
+    try:
+        request = AuditRequest(
+            company_name=state.company_name,
+            industry=state.industry,
+        )
+        result = await run_aeo_audit(request)
+        state.audit_result = result
+        state.current_node = ConversationNode.AUDIT_RESULTS
+
+        # Wait for next response_required with the audit results ready
+        # The next turn, Gemini will have the audit results in context
+        # and will present them naturally
+        logger.info(
+            f"✅ Audit complete: SoV={result.share_of_voice_pct}%, "
+            f"Score={result.aeo_score}"
+        )
+
+    except Exception as e:
+        logger.error(f"Audit failed: {e}", exc_info=True)
+        state.current_node = ConversationNode.ICP_QUALIFICATION
+
+
+async def _handle_tool_call_during_stream(
+    websocket: WebSocket,
+    state: CallState,
+    response_id: int,
+    tool_name: str,
+    current_response_id_ref: Any,
+) -> None:
+    """Handle a tool call that was detected mid-stream."""
+    from app.agent.graph import agent_graph
+
+    logger.info(f"🔧 Tool call detected: {tool_name}")
+
+    # Send filler
+    if tool_name == "audit_ai_search":
+        filler = "Let me check your AI visibility real quick..."
+    elif tool_name == "book_calendar_slot":
+        filler = "Let me check the calendar for you..."
+    else:
+        filler = "One moment please..."
+
+    await websocket.send_json({
+        "response_type": "response",
+        "response_id": response_id,
+        "content": filler,
+        "content_complete": True,
+        "end_call": False,
+    })
+
+    # Run the full graph (which will execute the tool)
+    try:
+        result = await agent_graph.ainvoke(state.model_dump())
+        _apply_graph_result(state, result)
+    except Exception as e:
+        logger.error(f"Tool execution error: {e}", exc_info=True)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -318,12 +386,94 @@ def _detect_routing_intent(transcript: str, state: CallState) -> ConversationNod
     if current == ConversationNode.BANT_NEED:
         return ConversationNode.BANT_BUDGET
     if current == ConversationNode.BANT_BUDGET:
+        return ConversationNode.BANT_AUTHORITY
+    if current == ConversationNode.BANT_AUTHORITY:
         return ConversationNode.BANT_TIMELINE
     if current == ConversationNode.BANT_TIMELINE:
         return ConversationNode.BOOKING
     if current == ConversationNode.BOOKING:
-        return ConversationNode.CLOSING
+        if state.booking_result and state.booking_result.success:
+            return ConversationNode.CLOSING
+        return ConversationNode.BOOKING
     if current == ConversationNode.CLOSING:
         return ConversationNode.TERMINAL
 
     return current
+
+
+# ═══════════════════════════════════════════════════════════
+# Helpers
+# ═══════════════════════════════════════════════════════════
+
+
+def _retell_transcript_to_messages(transcript: list[dict]) -> list[dict]:
+    """Convert Retell's transcript format to our internal message format."""
+    messages = []
+    for entry in transcript:
+        role = entry.get("role", "user")
+        content = entry.get("content", "")
+        if role == "agent":
+            messages.append({"role": "assistant", "content": content})
+        else:
+            messages.append({"role": "user", "content": content})
+    return messages
+
+
+def _extract_known_fields(transcript: str, state: CallState) -> None:
+    """Populate cheap structured fields before the LLM turn."""
+    if not transcript:
+        return
+
+    if not state.email:
+        email_match = _EMAIL_RE.search(transcript)
+        if email_match:
+            state.email = email_match.group(0)
+
+    text = transcript.lower()
+    if not state.industry:
+        for needle, canonical in _INDUSTRY_ALIASES:
+            if needle in text:
+                state.industry = canonical
+                break
+
+    if state.company_name:
+        return
+
+    # Simple company name extraction patterns
+    patterns = [
+        r"(?:company|we'?re|i'?m (?:with|from|at))\s+([A-Z][A-Za-z0-9&.\- ]+)",
+        r"called\s+([A-Z][A-Za-z0-9&.\- ]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, transcript)
+        if match:
+            company = match.group(1).strip(" ,.;:")
+            if company.lower() not in {"a", "an", "the"}:
+                state.company_name = company
+                return
+
+
+def _apply_graph_result(state: CallState, result: dict) -> None:
+    """Merge LangGraph output back into call state."""
+    state.messages = result.get("messages", state.messages)
+    state.last_bot_utterance = result.get("last_bot_utterance", state.last_bot_utterance)
+    state.audit_result = result.get("audit_result", state.audit_result)
+    state.booking_result = result.get("booking_result", state.booking_result)
+
+    current_node = result.get("current_node")
+    if current_node:
+        state.current_node = ConversationNode(current_node)
+
+    for field in ("company_name", "industry", "prospect_name", "email", "phone"):
+        value = result.get(field)
+        if value:
+            setattr(state, field, value)
+
+
+async def _safe_fire_crm_sync(state: CallState) -> None:
+    """Run CRM sync outside the call path and contain failures."""
+    try:
+        from app.tools.crm import fire_crm_sync
+        await fire_crm_sync(state)
+    except Exception:
+        logger.exception("CRM sync failed after call end: %s", state.call_id)

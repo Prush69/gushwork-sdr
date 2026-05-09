@@ -3,599 +3,245 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gushwork AEO — Inbound Voice Agent</title>
-    <meta name="description" content="Talk to Gushwork's AI voice agent to discover your company's Answer Engine Optimization score.">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <title>Gushwork — Talk to Our AI Sales Agent</title>
     <style>
-        /* ═══ Reset & Variables ═══ */
-        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-
-        :root {
-            --bg-primary: #0a0a0f;
-            --bg-card: rgba(255, 255, 255, 0.03);
-            --bg-card-hover: rgba(255, 255, 255, 0.06);
-            --border: rgba(255, 255, 255, 0.08);
-            --border-active: rgba(99, 102, 241, 0.5);
-            --text-primary: #f0f0f5;
-            --text-secondary: #8b8b9e;
-            --text-muted: #55556a;
-            --accent: #6366f1;
-            --accent-glow: rgba(99, 102, 241, 0.15);
-            --accent-bright: #818cf8;
-            --success: #10b981;
-            --danger: #ef4444;
-            --warning: #f59e0b;
-            --radius: 16px;
-            --radius-sm: 10px;
-            --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: var(--font);
-            background: var(--bg-primary);
-            color: var(--text-primary);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #0a0a0f;
+            color: #e4e4e7;
             min-height: 100vh;
             display: flex;
-            flex-direction: column;
             align-items: center;
             justify-content: center;
-            overflow: hidden;
-            position: relative;
         }
 
-        /* ═══ Background Effects ═══ */
-        .bg-grid {
-            position: fixed;
-            inset: 0;
-            background-image:
-                linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
-            background-size: 60px 60px;
-            pointer-events: none;
-            z-index: 0;
-        }
-
-        .bg-glow {
-            position: fixed;
-            width: 600px;
-            height: 600px;
-            border-radius: 50%;
-            background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            pointer-events: none;
-            z-index: 0;
-            animation: pulse-glow 4s ease-in-out infinite;
-        }
-
-        @keyframes pulse-glow {
-            0%, 100% { opacity: 0.3; transform: translate(-50%, -50%) scale(1); }
-            50% { opacity: 0.6; transform: translate(-50%, -50%) scale(1.1); }
-        }
-
-        /* ═══ Main Container ═══ */
         .container {
-            position: relative;
-            z-index: 1;
-            width: 100%;
-            max-width: 520px;
-            padding: 20px;
-        }
-
-        /* ═══ Header ═══ */
-        .header {
             text-align: center;
-            margin-bottom: 40px;
+            max-width: 480px;
+            padding: 2rem;
         }
 
-        .logo {
-            font-size: 14px;
-            font-weight: 600;
-            letter-spacing: 3px;
-            text-transform: uppercase;
-            color: var(--accent-bright);
-            margin-bottom: 16px;
-        }
-
-        .header h1 {
-            font-size: 32px;
-            font-weight: 800;
-            line-height: 1.2;
-            margin-bottom: 12px;
-            background: linear-gradient(135deg, var(--text-primary) 0%, var(--accent-bright) 100%);
+        h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #818cf8, #c084fc, #f472b6);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
-            background-clip: text;
+            margin-bottom: 0.5rem;
         }
 
-        .header p {
-            font-size: 15px;
-            color: var(--text-secondary);
-            line-height: 1.6;
-            max-width: 400px;
-            margin: 0 auto;
+        .subtitle {
+            color: #71717a;
+            font-size: 0.95rem;
+            margin-bottom: 2.5rem;
+            line-height: 1.5;
         }
 
-        /* ═══ Agent Card ═══ */
-        .agent-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 32px;
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            transition: all 0.3s ease;
-        }
-
-        .agent-card:hover {
-            background: var(--bg-card-hover);
-            border-color: var(--border-active);
-        }
-
-        /* ═══ Status Indicator ═══ */
-        .status-bar {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 28px;
-            padding: 10px 16px;
-            background: rgba(16, 185, 129, 0.06);
-            border: 1px solid rgba(16, 185, 129, 0.15);
-            border-radius: var(--radius-sm);
-        }
-
-        .status-dot {
-            width: 8px;
-            height: 8px;
+        /* Call Button */
+        #call-btn {
+            width: 120px;
+            height: 120px;
             border-radius: 50%;
-            background: var(--success);
-            animation: blink 2s infinite;
-        }
-
-        @keyframes blink {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.4; }
-        }
-
-        .status-text {
-            font-size: 13px;
-            font-weight: 500;
-            color: var(--success);
-        }
-
-        /* ═══ Waveform Visualizer ═══ */
-        .waveform-container {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 3px;
-            height: 80px;
-            margin-bottom: 28px;
-            opacity: 0.3;
-            transition: opacity 0.3s ease;
-        }
-
-        .waveform-container.active {
-            opacity: 1;
-        }
-
-        .wave-bar {
-            width: 4px;
-            height: 20px;
-            background: var(--accent);
-            border-radius: 4px;
-            transition: height 0.1s ease;
-        }
-
-        .waveform-container.active .wave-bar {
-            animation: wave 1.2s ease-in-out infinite;
-        }
-
-        @keyframes wave {
-            0%, 100% { height: 20px; opacity: 0.4; }
-            50% { height: 60px; opacity: 1; }
-        }
-
-        /* Stagger bars */
-        .wave-bar:nth-child(1)  { animation-delay: 0.0s; }
-        .wave-bar:nth-child(2)  { animation-delay: 0.05s; }
-        .wave-bar:nth-child(3)  { animation-delay: 0.1s; }
-        .wave-bar:nth-child(4)  { animation-delay: 0.15s; }
-        .wave-bar:nth-child(5)  { animation-delay: 0.2s; }
-        .wave-bar:nth-child(6)  { animation-delay: 0.25s; }
-        .wave-bar:nth-child(7)  { animation-delay: 0.3s; }
-        .wave-bar:nth-child(8)  { animation-delay: 0.35s; }
-        .wave-bar:nth-child(9)  { animation-delay: 0.4s; }
-        .wave-bar:nth-child(10) { animation-delay: 0.45s; }
-        .wave-bar:nth-child(11) { animation-delay: 0.5s; }
-        .wave-bar:nth-child(12) { animation-delay: 0.55s; }
-        .wave-bar:nth-child(13) { animation-delay: 0.6s; }
-        .wave-bar:nth-child(14) { animation-delay: 0.55s; }
-        .wave-bar:nth-child(15) { animation-delay: 0.5s; }
-        .wave-bar:nth-child(16) { animation-delay: 0.45s; }
-        .wave-bar:nth-child(17) { animation-delay: 0.4s; }
-        .wave-bar:nth-child(18) { animation-delay: 0.35s; }
-        .wave-bar:nth-child(19) { animation-delay: 0.3s; }
-        .wave-bar:nth-child(20) { animation-delay: 0.25s; }
-
-        /* ═══ Call Button ═══ */
-        .call-btn {
-            width: 100%;
-            padding: 16px 24px;
             border: none;
-            border-radius: var(--radius-sm);
-            font-family: var(--font);
-            font-size: 15px;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            color: white;
+            font-size: 1.1rem;
             font-weight: 600;
             cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 0 40px rgba(99, 102, 241, 0.3);
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 10px;
-            transition: all 0.2s ease;
-            position: relative;
-            overflow: hidden;
+            margin: 0 auto 2rem;
         }
 
-        .call-btn.start {
-            background: var(--accent);
-            color: white;
+        #call-btn:hover:not(:disabled) {
+            transform: scale(1.05);
+            box-shadow: 0 0 60px rgba(99, 102, 241, 0.5);
         }
 
-        .call-btn.start:hover {
-            background: var(--accent-bright);
-            transform: translateY(-1px);
-            box-shadow: 0 8px 30px var(--accent-glow);
+        #call-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
 
-        .call-btn.start:active {
-            transform: translateY(0);
+        #call-btn.active {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            box-shadow: 0 0 40px rgba(239, 68, 68, 0.3);
+            animation: pulse 2s infinite;
         }
 
-        .call-btn.end {
-            background: rgba(239, 68, 68, 0.1);
-            color: var(--danger);
-            border: 1px solid rgba(239, 68, 68, 0.2);
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 40px rgba(239, 68, 68, 0.3); }
+            50% { box-shadow: 0 0 60px rgba(239, 68, 68, 0.5); }
         }
 
-        .call-btn.end:hover {
-            background: rgba(239, 68, 68, 0.15);
+        /* Status */
+        #status {
+            font-size: 0.85rem;
+            color: #71717a;
+            margin-bottom: 1.5rem;
+            min-height: 1.2rem;
         }
 
-        .call-btn svg {
-            width: 18px;
-            height: 18px;
-        }
+        #status.connected { color: #22c55e; }
+        #status.error { color: #ef4444; }
 
-        /* ═══ Transcript Area ═══ */
-        .transcript {
-            margin-top: 20px;
-            max-height: 200px;
+        /* Transcript */
+        #transcript {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 12px;
+            padding: 1rem;
+            text-align: left;
+            max-height: 300px;
             overflow-y: auto;
-            padding: 16px;
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: var(--radius-sm);
-            border: 1px solid var(--border);
-            display: none;
-        }
-
-        .transcript.visible {
-            display: block;
-        }
-
-        .transcript-line {
-            font-size: 13px;
+            font-size: 0.85rem;
             line-height: 1.6;
-            margin-bottom: 8px;
-            animation: fadeIn 0.3s ease;
-        }
-
-        .transcript-line .role {
-            font-weight: 600;
-            margin-right: 6px;
-        }
-
-        .transcript-line .role.agent {
-            color: var(--accent-bright);
-        }
-
-        .transcript-line .role.user {
-            color: var(--success);
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(4px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        /* ═══ Metrics Bar ═══ */
-        .metrics {
-            display: flex;
-            gap: 16px;
-            margin-top: 20px;
             display: none;
         }
 
-        .metrics.visible {
-            display: flex;
-        }
+        #transcript.visible { display: block; }
 
-        .metric {
-            flex: 1;
-            text-align: center;
-            padding: 12px;
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-sm);
-        }
-
-        .metric-value {
-            font-size: 20px;
-            font-weight: 700;
-            color: var(--accent-bright);
-        }
-
-        .metric-label {
-            font-size: 11px;
-            color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-top: 4px;
-        }
-
-        /* ═══ Footer ═══ */
-        .footer {
-            text-align: center;
-            margin-top: 32px;
-            font-size: 12px;
-            color: var(--text-muted);
-        }
-
-        .footer a {
-            color: var(--accent-bright);
-            text-decoration: none;
-        }
-
-        /* ═══ Scrollbar ═══ */
-        ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+        .msg { margin-bottom: 0.5rem; }
+        .msg-user { color: #818cf8; }
+        .msg-agent { color: #a1a1aa; }
+        .msg-label { font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
     </style>
 </head>
 <body>
-    <div class="bg-grid"></div>
-    <div class="bg-glow"></div>
-
     <div class="container">
-        <header class="header">
-            <div class="logo">Gushwork</div>
-            <h1>Inbound AEO Voice Agent</h1>
-            <p>Talk to our AI agent to get a free Answer Engine Optimization audit for your company in real-time.</p>
-        </header>
+        <h1>Gushwork AEO</h1>
+        <p class="subtitle">
+            Talk to our AI Sales Agent. Get a free AEO visibility audit
+            for your company — powered by Gemini 3 Flash.
+        </p>
 
-        <div class="agent-card">
-            <div class="status-bar">
-                <div class="status-dot" id="statusDot"></div>
-                <span class="status-text" id="statusText">Agent Online</span>
-            </div>
+        <button id="call-btn" onclick="toggleCall()">
+            🎤 Call
+        </button>
 
-            <div class="waveform-container" id="waveform">
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-                <div class="wave-bar"></div>
-            </div>
+        <div id="status">Click to connect</div>
 
-            <button class="call-btn start" id="callBtn" onclick="toggleCall()">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/>
-                </svg>
-                <span id="callBtnText">Start Call</span>
-            </button>
-
-            <div class="transcript" id="transcript"></div>
-
-            <div class="metrics" id="metrics">
-                <div class="metric">
-                    <div class="metric-value" id="metricDuration">0:00</div>
-                    <div class="metric-label">Duration</div>
-                </div>
-                <div class="metric">
-                    <div class="metric-value" id="metricLatency">—</div>
-                    <div class="metric-label">Avg Latency</div>
-                </div>
-                <div class="metric">
-                    <div class="metric-value" id="metricTurns">0</div>
-                    <div class="metric-label">Turns</div>
-                </div>
-            </div>
-        </div>
-
-        <footer class="footer">
-            Powered by Retell AI · Deepgram · GPT-4o · ElevenLabs<br>
-            <a href="/docs" target="_blank">API Docs</a>
-        </footer>
+        <div id="transcript"></div>
     </div>
 
-    <!-- Retell AI Web SDK -->
-    <script src="https://cdn.retellai.com/retell-client-sdk.js"></script>
+    <!-- Retell Client SDK (loaded from CDN) -->
+    <script src="https://cdn.jsdelivr.net/npm/retell-client-js-sdk@3/dist/index.umd.min.js"></script>
+
     <script>
-        // ═══ State ═══
-        let isCallActive = false;
+        const btn = document.getElementById('call-btn');
+        const statusEl = document.getElementById('status');
+        const transcriptEl = document.getElementById('transcript');
+
         let retellClient = null;
-        let callStartTime = null;
-        let durationInterval = null;
-        let turnCount = 0;
-        let latencies = [];
+        let isCallActive = false;
 
-        // ═══ DOM ═══
-        const callBtn = document.getElementById('callBtn');
-        const callBtnText = document.getElementById('callBtnText');
-        const statusDot = document.getElementById('statusDot');
-        const statusText = document.getElementById('statusText');
-        const waveform = document.getElementById('waveform');
-        const transcript = document.getElementById('transcript');
-        const metrics = document.getElementById('metrics');
-
-        // ═══ Call Management ═══
         async function toggleCall() {
             if (isCallActive) {
-                endCall();
+                stopCall();
             } else {
-                startCall();
+                await startCall();
             }
         }
 
         async function startCall() {
+            btn.disabled = true;
+            statusEl.textContent = 'Connecting...';
+            statusEl.className = '';
+
             try {
-                // Initialize Retell client
-                retellClient = new RetellClient();
+                // 1. Get access token from our backend
+                const resp = await fetch('/create-web-call', { method: 'POST' });
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    throw new Error(err.error || 'Failed to create call');
+                }
+                const { access_token, call_id } = await resp.json();
 
-                // Register call with your backend
-                const response = await fetch('/retell/webhook', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ event: 'call_started', call_id: crypto.randomUUID() }),
+                // 2. Initialize Retell client
+                retellClient = new RetellWebClient();
+
+                // 3. Set up event listeners
+                retellClient.on('call_started', () => {
+                    isCallActive = true;
+                    btn.disabled = false;
+                    btn.classList.add('active');
+                    btn.innerHTML = '⏹ End';
+                    statusEl.textContent = '🟢 Connected — speak now';
+                    statusEl.className = 'connected';
+                    transcriptEl.classList.add('visible');
                 });
 
-                // Start the WebRTC call via Retell
+                retellClient.on('call_ended', () => {
+                    resetUI();
+                    statusEl.textContent = 'Call ended';
+                });
+
+                retellClient.on('agent_start_talking', () => {
+                    statusEl.textContent = '🗣️ Agent speaking...';
+                    statusEl.className = 'connected';
+                });
+
+                retellClient.on('agent_stop_talking', () => {
+                    statusEl.textContent = '🎤 Listening...';
+                    statusEl.className = 'connected';
+                });
+
+                retellClient.on('update', (update) => {
+                    // Update transcript display
+                    if (update.transcript) {
+                        renderTranscript(update.transcript);
+                    }
+                });
+
+                retellClient.on('error', (error) => {
+                    console.error('Retell error:', error);
+                    statusEl.textContent = `Error: ${error.message || 'Connection failed'}`;
+                    statusEl.className = 'error';
+                    resetUI();
+                });
+
+                // 4. Start the call
                 await retellClient.startCall({
-                    accessToken: 'RETELL_ACCESS_TOKEN',  // Replace with dynamic token
-                    onCallStarted: () => {
-                        setCallActive(true);
-                        addTranscriptLine('agent', 'Thanks for calling Gushwork. Are you calling for support, or looking to generate more inbound leads?');
-                    },
-                    onCallEnded: () => {
-                        setCallActive(false);
-                    },
-                    onAgentResponse: (text) => {
-                        addTranscriptLine('agent', text);
-                        turnCount++;
-                        updateMetrics();
-                    },
-                    onUserTranscript: (text) => {
-                        addTranscriptLine('user', text);
-                    },
-                    onError: (error) => {
-                        console.error('Retell error:', error);
-                        statusText.textContent = 'Connection Error';
-                        statusDot.style.background = '#ef4444';
-                    },
+                    accessToken: access_token,
                 });
-            } catch (error) {
-                console.error('Failed to start call:', error);
-                // Fallback demo mode
-                setCallActive(true);
-                simulateDemo();
+
+            } catch (err) {
+                console.error('Call setup error:', err);
+                statusEl.textContent = `Error: ${err.message}`;
+                statusEl.className = 'error';
+                btn.disabled = false;
             }
         }
 
-        function endCall() {
+        function stopCall() {
             if (retellClient) {
                 retellClient.stopCall();
             }
-            setCallActive(false);
+            resetUI();
         }
 
-        // ═══ UI State ═══
-        function setCallActive(active) {
-            isCallActive = active;
-
-            if (active) {
-                callBtn.className = 'call-btn end';
-                callBtnText.textContent = 'End Call';
-                statusText.textContent = 'Call Active';
-                statusDot.style.background = '#ef4444';
-                statusDot.style.animationDuration = '0.8s';
-                waveform.classList.add('active');
-                transcript.classList.add('visible');
-                metrics.classList.add('visible');
-                callStartTime = Date.now();
-                durationInterval = setInterval(updateDuration, 1000);
-            } else {
-                callBtn.className = 'call-btn start';
-                callBtnText.textContent = 'Start Call';
-                statusText.textContent = 'Agent Online';
-                statusDot.style.background = '#10b981';
-                statusDot.style.animationDuration = '2s';
-                waveform.classList.remove('active');
-                clearInterval(durationInterval);
-            }
+        function resetUI() {
+            isCallActive = false;
+            btn.disabled = false;
+            btn.classList.remove('active');
+            btn.innerHTML = '🎤 Call';
         }
 
-        // ═══ Transcript ═══
-        function addTranscriptLine(role, text) {
-            const line = document.createElement('div');
-            line.className = 'transcript-line';
-            line.innerHTML = `<span class="role ${role}">${role === 'agent' ? 'Agent' : 'You'}:</span> ${text}`;
-            transcript.appendChild(line);
-            transcript.scrollTop = transcript.scrollHeight;
-        }
-
-        // ═══ Metrics ═══
-        function updateDuration() {
-            if (!callStartTime) return;
-            const elapsed = Math.floor((Date.now() - callStartTime) / 1000);
-            const min = Math.floor(elapsed / 60);
-            const sec = elapsed % 60;
-            document.getElementById('metricDuration').textContent = `${min}:${sec.toString().padStart(2, '0')}`;
-        }
-
-        function updateMetrics() {
-            document.getElementById('metricTurns').textContent = turnCount;
-            if (latencies.length > 0) {
-                const avg = Math.round(latencies.reduce((a, b) => a + b) / latencies.length);
-                document.getElementById('metricLatency').textContent = `${avg}ms`;
-            }
-        }
-
-        // ═══ Demo Mode (when Retell isn't configured) ═══
-        function simulateDemo() {
-            const demoScript = [
-                { delay: 1000, role: 'agent', text: 'Thanks for calling Gushwork. Are you calling for support, or looking to generate more inbound leads?' },
-                { delay: 4000, role: 'user', text: "I'm interested in generating more leads." },
-                { delay: 5500, role: 'agent', text: "Great to hear! I can help with that. What's your company name and what industry are you in?" },
-                { delay: 9000, role: 'user', text: "We're TechFlow, a B2B SaaS company." },
-                { delay: 10000, role: 'agent', text: "Perfect — let me run a quick AI visibility audit on TechFlow right now..." },
-                { delay: 13000, role: 'agent', text: "So I just ran the audit and TechFlow currently has a 0% Share of Voice in AI answer engines. When someone asks ChatGPT or Perplexity about B2B SaaS solutions, your competitors are being recommended — you're completely invisible." },
-                { delay: 18000, role: 'user', text: "That's concerning. How much does that cost to fix?" },
-                { delay: 19500, role: 'agent', text: "That's a fair question — compared to what you're spending now on paid search, AEO is a fraction of the cost with compounding returns. Want me to book a strategy session so our team can walk you through the full breakdown?" },
-                { delay: 24000, role: 'user', text: "Sure, how about tomorrow at 2pm?" },
-                { delay: 25500, role: 'agent', text: "Perfect, I've got you locked in for tomorrow at 2:00 PM. I'm syncing these notes to our Account Executive now. Have a great day!" },
-            ];
-
-            demoScript.forEach(({ delay, role, text }) => {
-                setTimeout(() => {
-                    if (!isCallActive) return;
-                    addTranscriptLine(role, text);
-                    if (role === 'agent') { turnCount++; latencies.push(Math.floor(Math.random() * 200 + 250)); }
-                    updateMetrics();
-                }, delay);
-            });
-
-            // Auto-end after demo
-            setTimeout(() => {
-                if (isCallActive) setCallActive(false);
-            }, 28000);
+        function renderTranscript(transcript) {
+            transcriptEl.innerHTML = transcript
+                .map(entry => {
+                    const isAgent = entry.role === 'agent';
+                    const cls = isAgent ? 'msg-agent' : 'msg-user';
+                    const label = isAgent ? 'Agent' : 'You';
+                    return `<div class="msg ${cls}"><span class="msg-label">${label}:</span> ${entry.content}</div>`;
+                })
+                .join('');
+            transcriptEl.scrollTop = transcriptEl.scrollHeight;
         }
     </script>
 </body>

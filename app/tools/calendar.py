@@ -7,16 +7,19 @@ the conversational time string to ISO-8601, and books via Cal.com API.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from dateutil import parser as dateutil_parser
-from dateutil.relativedelta import relativedelta
 
 from app.config import settings
 from app.schemas import BookingRequest, BookingResult
 
 logger = logging.getLogger(__name__)
+_RELATIVE_RE = re.compile(r"\bin\s+(\d+)\s+(minute|minutes|hour|hours|day|days|week|weeks)\b")
+_TIME_RE = re.compile(r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b")
 
 # ── Time String Normalization ──────────────────────────────
 
@@ -31,21 +34,52 @@ def _parse_conversational_time(time_str: str, timezone: str) -> datetime:
     for relative expressions.
     """
     text = time_str.lower().strip()
-    now = datetime.now()
+    try:
+        tz = ZoneInfo(timezone)
+    except ZoneInfoNotFoundError:
+        logger.warning("Unknown timezone '%s', defaulting to UTC", timezone)
+        tz = ZoneInfo("UTC")
+
+    now = datetime.now(tz)
+
+    relative = _RELATIVE_RE.search(text)
+    if relative:
+        amount = int(relative.group(1))
+        unit = relative.group(2)
+        if unit.startswith("minute"):
+            return now + timedelta(minutes=amount)
+        if unit.startswith("hour"):
+            return now + timedelta(hours=amount)
+        if unit.startswith("day"):
+            return now + timedelta(days=amount)
+        if unit.startswith("week"):
+            return now + timedelta(weeks=amount)
 
     # Handle relative expressions
-    if "tomorrow" in text:
-        base = now + timedelta(days=1)
-    elif "day after tomorrow" in text:
+    if "day after tomorrow" in text:
         base = now + timedelta(days=2)
+    elif "tomorrow" in text:
+        base = now + timedelta(days=1)
     elif "next week" in text:
         base = now + timedelta(weeks=1)
     else:
         base = None
 
+    if "morning" in text and not _TIME_RE.search(text):
+        base = base or now
+        return base.replace(hour=10, minute=0, second=0, microsecond=0)
+    if "afternoon" in text and not _TIME_RE.search(text):
+        base = base or now
+        return base.replace(hour=14, minute=0, second=0, microsecond=0)
+    if "evening" in text and not _TIME_RE.search(text):
+        base = base or now
+        return base.replace(hour=17, minute=0, second=0, microsecond=0)
+
     # Try dateutil fuzzy parsing
     try:
         parsed = dateutil_parser.parse(time_str, fuzzy=True, default=base or now)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=tz)
         # If parsed time is in the past, bump to next day
         if parsed < now:
             parsed += timedelta(days=1)

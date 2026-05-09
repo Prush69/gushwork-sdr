@@ -13,22 +13,19 @@ from __future__ import annotations
 
 import logging
 import time
-import traceback
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langsmith import traceable
 from langgraph.graph import END, StateGraph
+from langsmith import traceable
 
 from app.agent.prompts import NODE_PROMPTS, SYSTEM_PROMPT, TOOL_DEFINITIONS
 from app.config import settings
 from app.schemas import (
     AuditRequest,
-    AuditResult,
-    BANTQualification,
     BookingRequest,
-    BookingResult,
     CallState,
     ConversationNode,
 )
@@ -43,6 +40,7 @@ TOOL_MAX_RETRIES = 2
 # ═══════════════════════════════════════════════════════════
 
 _llm: ChatGoogleGenerativeAI | None = None
+_llm_with_tools: Any | None = None
 
 
 def get_llm() -> ChatGoogleGenerativeAI:
@@ -54,9 +52,45 @@ def get_llm() -> ChatGoogleGenerativeAI:
             temperature=settings.llm_temperature,
             max_output_tokens=settings.llm_max_tokens,
             google_api_key=settings.gemini_api_key,
+            thinking_budget=0,
+            include_thoughts=False,
             streaming=True,  # Enable token-level streaming
         )
     return _llm
+
+
+def get_llm_with_tools() -> Any:
+    """Return a cached tool-bound LLM wrapper for the per-turn hot path."""
+    global _llm_with_tools
+    if _llm_with_tools is None:
+        _llm_with_tools = get_llm().bind_tools(TOOL_DEFINITIONS)
+    return _llm_with_tools
+
+
+def _coerce_state(state: CallState | dict[str, Any]) -> CallState:
+    """LangGraph can pass either the Pydantic model or a dumped dict."""
+    if isinstance(state, CallState):
+        return state
+    return CallState(**state)
+
+
+def _content_to_text(content: Any) -> str:
+    """Normalize provider-specific message content blocks to plain text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    if content is None:
+        return ""
+    return str(content)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -64,9 +98,60 @@ def get_llm() -> ChatGoogleGenerativeAI:
 # ═══════════════════════════════════════════════════════════
 
 
-def _build_messages(state: CallState) -> list:
+def _build_state_summary(state: CallState) -> str:
+    """Compact structured state so capped history does not lose key facts."""
+    facts: list[str] = [f"Current node: {state.current_node.value}"]
+
+    if state.prospect_name:
+        facts.append(f"Prospect: {state.prospect_name}")
+    if state.company_name:
+        facts.append(f"Company: {state.company_name}")
+    if state.industry:
+        facts.append(f"Industry: {state.industry}")
+    if state.email:
+        facts.append(f"Email: {state.email}")
+    if state.phone:
+        facts.append(f"Phone: {state.phone}")
+
+    bant_facts = [
+        ("Budget", state.bant.budget),
+        ("Authority", state.bant.authority),
+        ("Need", state.bant.need),
+        ("Timeline", state.bant.timeline),
+    ]
+    for label, value in bant_facts:
+        if value:
+            facts.append(f"{label}: {value}")
+
+    if state.audit_result:
+        facts.append(
+            "Audit: "
+            f"{state.audit_result.share_of_voice_pct:.1f}% Share of Voice, "
+            f"{state.audit_result.aeo_score:.1f}/100 AEO score"
+        )
+    if state.booking_result and state.booking_result.success:
+        facts.append(f"Booking confirmed: {state.booking_result.booked_at}")
+
+    return "[KNOWN CALL STATE]\n" + "\n".join(facts)
+
+
+def _recent_messages(state: CallState) -> list[dict[str, Any]]:
+    """Keep LLM context bounded while preserving a valid tool-message sequence."""
+    max_messages = max(settings.llm_context_messages, 0)
+    history = state.messages[-max_messages:] if max_messages else state.messages
+
+    # Tool messages without their immediately preceding assistant tool-call
+    # can be rejected by chat providers, so drop any orphaned leading tool rows.
+    while history and history[0].get("role") == "tool":
+        history = history[1:]
+    return history
+
+
+def _build_messages(state: CallState | dict[str, Any]) -> list:
     """Construct the message array for Gemini from current state."""
+    state = _coerce_state(state)
     messages = [SystemMessage(content=SYSTEM_PROMPT)]
+    messages.append(SystemMessage(content=_build_state_summary(state)))
 
     # Inject node-specific context
     node_prompt = NODE_PROMPTS.get(state.current_node.value, "")
@@ -88,9 +173,9 @@ def _build_messages(state: CallState) -> list:
         )
 
     # Conversation history
-    for msg in state.messages:
+    for msg in _recent_messages(state):
         role = msg.get("role", "user")
-        content = msg.get("content", "")
+        content = _content_to_text(msg.get("content", ""))
         if role == "user":
             messages.append(HumanMessage(content=content))
         elif role == "assistant":
@@ -107,13 +192,13 @@ def _build_messages(state: CallState) -> list:
 
 
 @traceable(name="llm_inference", run_type="llm")
-async def llm_inference(state: CallState) -> dict[str, Any]:
+async def llm_inference(state: CallState | dict[str, Any]) -> dict[str, Any]:
     """Core LLM inference node — fires Gemini 3 Flash with tools bound.
 
     Traced by LangSmith for full observability.
     """
-    llm = get_llm()
-    llm_with_tools = llm.bind_tools(TOOL_DEFINITIONS)
+    state = _coerce_state(state)
+    llm_with_tools = get_llm_with_tools()
     messages = _build_messages(state)
 
     t0 = time.perf_counter()
@@ -131,7 +216,7 @@ async def llm_inference(state: CallState) -> dict[str, Any]:
         }
 
     # Regular text response
-    text = response.content or ""
+    text = _content_to_text(response.content)
     return {
         "messages": state.messages + [{"role": "assistant", "content": text}],
         "last_bot_utterance": text,
@@ -140,13 +225,13 @@ async def llm_inference(state: CallState) -> dict[str, Any]:
 
 
 @traceable(name="llm_stream", run_type="llm")
-async def llm_inference_stream(state: CallState) -> AsyncIterator[str]:
+async def llm_inference_stream(state: CallState | dict[str, Any]) -> AsyncIterator[str]:
     """Streaming variant — yields tokens as Gemini produces them.
 
     Used by the SSE endpoint for sub-100ms TTFB (Improvement 1).
     """
-    llm = get_llm()
-    llm_with_tools = llm.bind_tools(TOOL_DEFINITIONS)
+    state = _coerce_state(state)
+    llm_with_tools = get_llm_with_tools()
     messages = _build_messages(state)
 
     t0 = time.perf_counter()
@@ -165,7 +250,7 @@ async def llm_inference_stream(state: CallState) -> AsyncIterator[str]:
             yield f"__TOOL_CALL__:{tool_calls[0].get('name', '')}"
             return
 
-        content = chunk.content or ""
+        content = _content_to_text(chunk.content)
         if content:
             yield content
 
@@ -197,15 +282,17 @@ def _detect_intent(user_text: str) -> str:
     return "continue"
 
 
-def route_after_greeting(state: CallState) -> str:
+def route_after_greeting(state: CallState | dict[str, Any]) -> str:
     """Router after greeting — determines if leads or support."""
+    state = _coerce_state(state)
     if not state.messages:
         return "llm_inference"
     return "llm_inference"
 
 
-def route_after_inference(state: CallState) -> str:
+def route_after_inference(state: CallState | dict[str, Any]) -> str:
     """Router after LLM inference — check for tool calls or next node."""
+    state = _coerce_state(state)
     if not state.messages:
         return END
 
@@ -242,7 +329,7 @@ class ToolExecutionError(Exception):
 
 
 @traceable(name="execute_audit", run_type="tool")
-async def execute_audit(state: CallState) -> dict[str, Any]:
+async def execute_audit(state: CallState | dict[str, Any]) -> dict[str, Any]:
     """Execute the AEO audit tool call with retry logic.
 
     If the audit fails (API timeout, bad data), the error is passed back
@@ -250,6 +337,7 @@ async def execute_audit(state: CallState) -> dict[str, Any]:
     """
     from app.tools.audit import run_aeo_audit
 
+    state = _coerce_state(state)
     last_msg = state.messages[-1]
     tool_calls = last_msg.get("tool_calls", [])
     if not tool_calls:
@@ -307,7 +395,7 @@ async def execute_audit(state: CallState) -> dict[str, Any]:
 
 
 @traceable(name="execute_booking", run_type="tool")
-async def execute_booking(state: CallState) -> dict[str, Any]:
+async def execute_booking(state: CallState | dict[str, Any]) -> dict[str, Any]:
     """Execute the calendar booking tool call with retry logic.
 
     If Cal.com rejects the time or dateutil can't parse it, Gemini
@@ -315,6 +403,7 @@ async def execute_booking(state: CallState) -> dict[str, Any]:
     """
     from app.tools.calendar import book_slot
 
+    state = _coerce_state(state)
     last_msg = state.messages[-1]
     tool_calls = last_msg.get("tool_calls", [])
     if not tool_calls:
@@ -373,9 +462,38 @@ async def execute_booking(state: CallState) -> dict[str, Any]:
 
 
 @traceable(name="secondary_inference", run_type="llm")
-async def secondary_inference(state: CallState) -> dict[str, Any]:
+async def secondary_inference(state: CallState | dict[str, Any]) -> dict[str, Any]:
     """Secondary LLM call after tool execution — presents results to user."""
-    return await llm_inference(state)
+    state = _coerce_state(state)
+    try:
+        return await llm_inference(state)
+    except Exception:
+        logger.exception("Secondary inference failed; using deterministic tool summary")
+
+        if state.audit_result:
+            audit = state.audit_result
+            text = (
+                f"I ran the audit: {audit.company_name} is at "
+                f"{audit.share_of_voice_pct:.1f}% Share of Voice with an "
+                f"AEO score of {audit.aeo_score:.1f}/100. {audit.diagnosis}"
+            )
+            return {
+                "messages": state.messages + [{"role": "assistant", "content": text}],
+                "last_bot_utterance": text,
+                "current_node": ConversationNode.AUDIT_RESULTS,
+            }
+
+        if state.booking_result:
+            booking = state.booking_result
+            if booking.success:
+                text = f"You're booked for {booking.booked_at}. I'll sync these notes now."
+                return {
+                    "messages": state.messages + [{"role": "assistant", "content": text}],
+                    "last_bot_utterance": text,
+                    "current_node": ConversationNode.CLOSING,
+                }
+
+        raise
 
 
 # ═══════════════════════════════════════════════════════════

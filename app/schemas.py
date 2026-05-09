@@ -9,11 +9,9 @@ rejected at the validation layer.
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
-from typing import Optional
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
-
 
 # ═══════════════════════════════════════════════════════════
 # Phase 4 — AEO Audit Tool
@@ -39,7 +37,7 @@ class AuditRequest(BaseModel):
         max_length=100,
         description="The prospect's industry vertical (e.g. 'SaaS', 'eCommerce').",
     )
-    website_url: Optional[str] = Field(
+    website_url: str | None = Field(
         None,
         description="Company website URL if mentioned.",
     )
@@ -84,7 +82,7 @@ class BookingRequest(BaseModel):
     """
 
     prospect_name: str = Field(..., description="Full name of the prospect.")
-    prospect_email: Optional[str] = Field(None, description="Email if provided.")
+    prospect_email: str | None = Field(None, description="Email if provided.")
     proposed_time: str = Field(
         ...,
         description=(
@@ -102,9 +100,9 @@ class BookingResult(BaseModel):
     """Output schema from the calendar booking endpoint."""
 
     success: bool
-    booked_at: Optional[datetime] = None
-    calendar_link: Optional[str] = None
-    error: Optional[str] = None
+    booked_at: datetime | None = None
+    calendar_link: str | None = None
+    error: str | None = None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -115,10 +113,10 @@ class BookingResult(BaseModel):
 class BANTQualification(BaseModel):
     """BANT qualification data extracted during the call."""
 
-    budget: Optional[str] = Field(None, description="Budget range or signals.")
-    authority: Optional[str] = Field(None, description="Decision-maker status.")
-    need: Optional[str] = Field(None, description="Core pain point identified.")
-    timeline: Optional[str] = Field(None, description="Purchase timeline.")
+    budget: str | None = Field(None, description="Budget range or signals.")
+    authority: str | None = Field(None, description="Decision-maker status.")
+    need: str | None = Field(None, description="Core pain point identified.")
+    timeline: str | None = Field(None, description="Purchase timeline.")
 
 
 class LeadSyncRequest(BaseModel):
@@ -127,16 +125,19 @@ class LeadSyncRequest(BaseModel):
     prospect_name: str
     company_name: str
     industry: str
-    email: Optional[str] = None
-    phone: Optional[str] = None
+    email: str | None = None
+    phone: str | None = None
     bant: BANTQualification
     call_transcript: str = Field(..., description="Full conversation transcript.")
     call_duration_seconds: float
     call_outcome: str = Field(
         ...,
-        description="Terminal state: 'meeting_booked', 'callback_requested', 'not_qualified', 'dropped'.",
+        description=(
+            "Terminal state: 'meeting_booked', 'callback_requested', "
+            "'not_qualified', 'dropped'."
+        ),
     )
-    audit_result: Optional[AuditResult] = None
+    audit_result: AuditResult | None = None
 
 
 class LeadSyncResult(BaseModel):
@@ -144,8 +145,8 @@ class LeadSyncResult(BaseModel):
 
     success: bool
     crm_provider: str
-    lead_id: Optional[str] = None
-    error: Optional[str] = None
+    lead_id: str | None = None
+    error: str | None = None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -153,7 +154,7 @@ class LeadSyncResult(BaseModel):
 # ═══════════════════════════════════════════════════════════
 
 
-class ConversationNode(str, Enum):
+class ConversationNode(StrEnum):
     """Every node the LangGraph state machine can occupy."""
 
     GREETING = "greeting"
@@ -180,24 +181,24 @@ class CallState(BaseModel):
     transcript_segments: list[str] = Field(default_factory=list)
 
     # Extracted data
-    prospect_name: Optional[str] = None
-    company_name: Optional[str] = None
-    industry: Optional[str] = None
-    email: Optional[str] = None
-    phone: Optional[str] = None
+    prospect_name: str | None = None
+    company_name: str | None = None
+    industry: str | None = None
+    email: str | None = None
+    phone: str | None = None
 
     # BANT
     bant: BANTQualification = Field(default_factory=BANTQualification)
 
     # Audit
-    audit_result: Optional[AuditResult] = None
+    audit_result: AuditResult | None = None
 
     # Booking
-    booking_result: Optional[BookingResult] = None
+    booking_result: BookingResult | None = None
 
     # Barge-in context
     last_bot_utterance: str = ""
-    interrupted_at_char: Optional[int] = None
+    interrupted_at_char: int | None = None
 
     # Metadata
     call_start_epoch: float = 0.0

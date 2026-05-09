@@ -15,6 +15,7 @@ import logging
 
 from fastapi import APIRouter
 
+from app.config import settings
 from app.schemas import (
     AuditRequest,
     AuditResult,
@@ -26,7 +27,6 @@ from app.schemas import (
 from app.tools.audit import run_aeo_audit
 from app.tools.calendar import book_slot
 from app.tools.crm import _sync_hubspot, _sync_salesforce
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["tools"])

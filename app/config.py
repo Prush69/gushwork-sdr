@@ -41,7 +41,13 @@ class Settings(BaseSettings):
     # ── LLM Tuning ─────────────────────────────────────────
     llm_temperature: float = 0.2
     llm_max_tokens: int = 100
+    llm_context_messages: int = 16
     vad_silence_ms: int = 400
+
+    # ── Pipeline Runtime Controls ──────────────────────────
+    call_state_ttl_seconds: int = 7200
+    audit_query_timeout_seconds: float = 20.0
+    audit_cache_ttl_seconds: int = 3600
 
     # ── LangSmith Observability ────────────────────────────
     langsmith_api_key: str = ""

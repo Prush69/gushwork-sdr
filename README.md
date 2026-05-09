@@ -40,6 +40,8 @@ Retell AI (managed)
 - **LangSmith Tracing** — Full observability across every node and tool call
 - **Rich CRM Visualization** — Color-coded terminal output for demo recordings
 
+For a step-by-step runtime breakdown and optimization notes, see [`PIPELINE.md`](PIPELINE.md).
+
 ## Setup
 
 ```bash
@@ -65,6 +67,10 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 | `CALCOM_EVENT_TYPE_ID` | ✅ | Cal.com event type ID |
 | `LANGSMITH_API_KEY` | Optional | LangSmith tracing key |
 | `HUBSPOT_API_KEY` | Optional | HubSpot CRM key |
+| `LLM_CONTEXT_MESSAGES` | Optional | Max recent messages sent to Gemini per turn |
+| `CALL_STATE_TTL_SECONDS` | Optional | In-memory call-state cleanup window |
+| `AUDIT_QUERY_TIMEOUT_SECONDS` | Optional | Per-query timeout for AEO audit probes |
+| `AUDIT_CACHE_TTL_SECONDS` | Optional | Cache window for repeated AEO audits |
 
 ## Deploy to Render
 
