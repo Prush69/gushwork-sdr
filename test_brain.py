@@ -19,6 +19,9 @@ if sys.platform == "win32":
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from app.agent.graph import llm_inference_stream
 from app.schemas import CallState, ConversationNode
 from app.agent.retell_handler import _detect_routing_intent, _extract_known_fields

@@ -79,12 +79,27 @@ def get_llm() -> Any:
     return _llm
 
 
-def get_llm_with_tools() -> Any:
-    """Return a cached tool-bound LLM wrapper for the per-turn hot path."""
-    global _llm_with_tools
-    if _llm_with_tools is None:
-        _llm_with_tools = get_llm().bind_tools(TOOL_DEFINITIONS)
-    return _llm_with_tools
+def get_llm_with_tools(state: CallState | None = None) -> Any:
+    """Return a tool-bound LLM wrapper, dynamically filtering tools based on state."""
+    llm = get_llm()
+    if not state:
+        return llm.bind_tools(TOOL_DEFINITIONS)
+        
+    tools_to_bind = []
+    for tool in TOOL_DEFINITIONS:
+        name = tool["function"]["name"]
+        if name == "audit_ai_search":
+            if state.company_name and state.industry:
+                tools_to_bind.append(tool)
+        elif name == "book_calendar_slot":
+            if state.current_node == ConversationNode.BOOKING:
+                tools_to_bind.append(tool)
+        else:
+            tools_to_bind.append(tool)
+            
+    if not tools_to_bind:
+        return llm
+    return llm.bind_tools(tools_to_bind)
 
 
 def _coerce_state(state: CallState | dict[str, Any]) -> CallState:
@@ -218,7 +233,7 @@ async def llm_inference(state: CallState | dict[str, Any]) -> dict[str, Any]:
     Traced by LangSmith for full observability.
     """
     state = _coerce_state(state)
-    llm_with_tools = get_llm_with_tools()
+    llm_with_tools = get_llm_with_tools(state)
     messages = _build_messages(state)
 
     t0 = time.perf_counter()
@@ -251,7 +266,7 @@ async def llm_inference_stream(state: CallState | dict[str, Any]) -> AsyncIterat
     Used by the SSE endpoint for sub-100ms TTFB (Improvement 1).
     """
     state = _coerce_state(state)
-    llm_with_tools = get_llm_with_tools()
+    llm_with_tools = get_llm_with_tools(state)
     messages = _build_messages(state)
 
     t0 = time.perf_counter()
