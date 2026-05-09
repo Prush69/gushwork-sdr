@@ -1,0 +1,37 @@
+# Render Blueprint — deploy via "New > Blueprint" in Render dashboard
+# Docs: https://docs.render.com/blueprint-spec
+
+services:
+  - type: web
+    name: gushwork-sdr
+    runtime: python
+    plan: starter          # $7/mo — always-on, no cold starts
+    buildCommand: pip install -e .
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: RETELL_API_KEY
+        sync: false        # Set manually in Render dashboard
+      - key: RETELL_AGENT_ID
+        sync: false
+      - key: RETELL_WEBHOOK_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3-flash-preview
+      - key: CALCOM_API_KEY
+        sync: false
+      - key: CALCOM_EVENT_TYPE_ID
+        value: "0"
+      - key: HUBSPOT_API_KEY
+        sync: false
+      - key: CRM_PROVIDER
+        value: hubspot
+      - key: WEBHOOK_BASE_URL
+        fromService:
+          type: web
+          name: gushwork-sdr
+          property: host   # auto-resolves to https://gushwork-sdr.onrender.com
+      - key: PYTHON_VERSION
+        value: "3.12.0"

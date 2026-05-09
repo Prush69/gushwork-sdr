@@ -1,0 +1,27 @@
+services:
+  gushwork-sdr:
+    build: .
+    container_name: gushwork-sdr
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+      - ./widget:/app/widget
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Cloudflare Tunnel — exposes localhost:8000 to the internet
+  # for Retell AI webhook delivery
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: gushwork-tunnel
+    command: tunnel --no-autoupdate --url http://gushwork-sdr:8000
+    depends_on:
+      - gushwork-sdr
+    restart: unless-stopped

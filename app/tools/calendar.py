@@ -1,0 +1,115 @@
+"""Calendar Booking Tool — Cal.com Integration.
+
+Phase 7, Step 22-23: Gemini triggers `book_calendar_slot`, FastAPI normalizes
+the conversational time string to ISO-8601, and books via Cal.com API.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timedelta
+
+import httpx
+from dateutil import parser as dateutil_parser
+from dateutil.relativedelta import relativedelta
+
+from app.config import settings
+from app.schemas import BookingRequest, BookingResult
+
+logger = logging.getLogger(__name__)
+
+# ── Time String Normalization ──────────────────────────────
+
+
+def _parse_conversational_time(time_str: str, timezone: str) -> datetime:
+    """Parse fuzzy human time expressions into ISO-8601 datetimes.
+
+    Handles: "tomorrow at 3pm", "next Tuesday morning", "in 2 hours",
+    "day after tomorrow at 10", etc.
+
+    Uses python-dateutil for most parsing, with manual fallbacks
+    for relative expressions.
+    """
+    text = time_str.lower().strip()
+    now = datetime.now()
+
+    # Handle relative expressions
+    if "tomorrow" in text:
+        base = now + timedelta(days=1)
+    elif "day after tomorrow" in text:
+        base = now + timedelta(days=2)
+    elif "next week" in text:
+        base = now + timedelta(weeks=1)
+    else:
+        base = None
+
+    # Try dateutil fuzzy parsing
+    try:
+        parsed = dateutil_parser.parse(time_str, fuzzy=True, default=base or now)
+        # If parsed time is in the past, bump to next day
+        if parsed < now:
+            parsed += timedelta(days=1)
+        return parsed
+    except (ValueError, OverflowError):
+        # Fallback: next business day at 10am
+        fallback = now + timedelta(days=1)
+        return fallback.replace(hour=10, minute=0, second=0, microsecond=0)
+
+
+# ── Cal.com API ────────────────────────────────────────────
+
+
+async def book_slot(request: BookingRequest) -> BookingResult:
+    """Book a calendar slot via Cal.com API.
+
+    If Cal.com API key is not configured, returns a simulated success
+    for development/demo purposes.
+    """
+    # Parse the conversational time
+    booked_at = _parse_conversational_time(request.proposed_time, request.timezone)
+    logger.info(f"Booking slot: {request.prospect_name} at {booked_at.isoformat()}")
+
+    # If no API key, simulate success
+    if not settings.calcom_api_key:
+        logger.warning("Cal.com API key not configured — simulating booking")
+        return BookingResult(
+            success=True,
+            booked_at=booked_at,
+            calendar_link=f"https://cal.com/gushwork/aeo-strategy?date={booked_at.strftime('%Y-%m-%d')}",
+        )
+
+    # Real Cal.com API call
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                "https://api.cal.com/v1/bookings",
+                params={"apiKey": settings.calcom_api_key},
+                json={
+                    "eventTypeId": settings.calcom_event_type_id,
+                    "start": booked_at.isoformat(),
+                    "end": (booked_at + timedelta(minutes=30)).isoformat(),
+                    "responses": {
+                        "name": request.prospect_name,
+                        "email": request.prospect_email or "noemail@placeholder.com",
+                    },
+                    "timeZone": request.timezone,
+                    "metadata": {
+                        "source": "gushwork_voice_agent",
+                    },
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            return BookingResult(
+                success=True,
+                booked_at=booked_at,
+                calendar_link=data.get("url", ""),
+            )
+
+    except httpx.HTTPError as e:
+        logger.error(f"Cal.com booking failed: {e}", exc_info=True)
+        return BookingResult(
+            success=False,
+            error=f"Booking failed: {str(e)}",
+        )
