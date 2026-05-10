@@ -42,48 +42,64 @@ import os
 
 _groq_key_cycle = None
 _gemini_llm = None
+_sarvam_llm = None
 
 def get_llm() -> Any:
-    """Initialize the LLM, rotating Groq API keys to bypass rate limits during testing."""
-    global _groq_key_cycle, _gemini_llm
+    """Initialize the LLM, dynamically routing based on Render Environment Variables."""
+    global _groq_key_cycle, _gemini_llm, _sarvam_llm
     
-    provider = settings.llm_provider.lower()
+    # Bypassing config.py to read directly from Render's environment
+    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
     
-    if provider == "groq":
+    if provider == "sarvam":
+        if _sarvam_llm is None:
+            from langchain_openai import ChatOpenAI
+            
+            sarvam_key = os.getenv("SARVAM_API_KEY", "")
+            # Using Sarvam 30B as it is hyper-optimized for real-time voice agents
+            model_name = os.getenv("SARVAM_MODEL", "sarvam-30b") 
+            
+            logger.info(f"Initializing LLM: provider=sarvam model={model_name}")
+            
+            _sarvam_llm = ChatOpenAI(
+                model=model_name,
+                api_key=sarvam_key,
+                base_url="https://api.sarvam.ai/v1",
+                # CRITICAL: Sarvam requires this exact header for auth
+                default_headers={"api-subscription-key": sarvam_key}, 
+                temperature=0.7,
+                max_tokens=250, # Keep generation fast and short
+                streaming=True,
+            )
+        return _sarvam_llm
+
+    elif provider == "groq":
         from langchain_groq import ChatGroq
-        
-        # 1. Initialize the infinite cycle of keys the first time this is called
         if _groq_key_cycle is None:
-            # Get the comma-separated list of keys, fallback to the single key if not found
-            keys_str = os.getenv("GROQ_API_KEYS", settings.groq_api_key)
+            keys_str = os.getenv("GROQ_API_KEYS", "")
             keys = [k.strip() for k in keys_str.split(",") if k.strip()]
-            if not keys:
-                keys = ["dummy_key"]
+            if not keys: keys = ["dummy_key"]
             _groq_key_cycle = itertools.cycle(keys)
             logger.info(f"🔄 Initialized Groq API Key Rotator with {len(keys)} keys.")
         
-        # 2. Grab the next key in the cycle
         current_key = next(_groq_key_cycle)
-        
-        # 3. Return a fresh instance with the new key
         return ChatGroq(
-            model=settings.groq_model,
-            temperature=settings.llm_temperature,
-            max_tokens=settings.llm_max_tokens,
+            model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+            temperature=0.7,
+            max_tokens=250,
             api_key=current_key,
             streaming=True,
         )
         
     else:
-        # Keep Gemini as a singleton if you switch back
         if _gemini_llm is None:
             from langchain_google_genai import ChatGoogleGenerativeAI
-            logger.info(f"Initializing LLM: provider=gemini model={settings.gemini_model}")
+            logger.info("Initializing LLM: provider=gemini")
             kwargs: dict[str, Any] = {
-                "model": settings.gemini_model,
-                "temperature": settings.llm_temperature,
-                "max_output_tokens": settings.llm_max_tokens,
-                "google_api_key": settings.gemini_api_key,
+                "model": os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
+                "temperature": 0.7,
+                "max_output_tokens": 250,
+                "google_api_key": os.getenv("GEMINI_API_KEY", ""),
                 "streaming": True,
             }
             _gemini_llm = ChatGoogleGenerativeAI(**kwargs)
