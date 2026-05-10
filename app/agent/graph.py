@@ -48,33 +48,12 @@ def get_llm() -> Any:
     """Initialize the LLM, dynamically routing based on Render Environment Variables."""
     global _groq_key_cycle, _gemini_llm, _sarvam_llm
     
-    # Bypassing config.py to read directly from Render's environment
-    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
+    provider = os.getenv("LLM_PROVIDER", "groq").lower()
     
-    if provider == "sarvam":
-        if _sarvam_llm is None:
-            from langchain_openai import ChatOpenAI
-            
-            sarvam_key = os.getenv("SARVAM_API_KEY", "")
-            # Using Sarvam 30B as it is hyper-optimized for real-time voice agents
-            model_name = os.getenv("SARVAM_MODEL", "sarvam-30b") 
-            
-            logger.info(f"Initializing LLM: provider=sarvam model={model_name}")
-            
-            _sarvam_llm = ChatOpenAI(
-                model=model_name,
-                api_key=sarvam_key,
-                base_url="https://api.sarvam.ai/v1",
-                # CRITICAL: Sarvam requires this exact header for auth
-                default_headers={"api-subscription-key": sarvam_key}, 
-                temperature=0.7,
-                max_tokens=250, # Keep generation fast and short
-                streaming=True,
-            )
-        return _sarvam_llm
-
-    elif provider == "groq":
+    if provider == "groq":
         from langchain_groq import ChatGroq
+        
+        # Initialize our bulletproof 6-key rotator
         if _groq_key_cycle is None:
             keys_str = os.getenv("GROQ_API_KEYS", "")
             keys = [k.strip() for k in keys_str.split(",") if k.strip()]
@@ -83,13 +62,20 @@ def get_llm() -> Any:
             logger.info(f"🔄 Initialized Groq API Key Rotator with {len(keys)} keys.")
         
         current_key = next(_groq_key_cycle)
+        
+        # Using OpenAI's open-weight MoE on Groq
+        model_name = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+        logger.info(f"Initializing LLM: provider=groq model={model_name}")
+        
         return ChatGroq(
-            model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+            model=model_name,
             temperature=0.7,
-            max_tokens=250,
+            max_tokens=250, # Keeps responses snappy
             api_key=current_key,
             streaming=True,
         )
+
+    # ... (Keep your existing sarvam and gemini fallback blocks below this) ...
         
     else:
         if _gemini_llm is None:
