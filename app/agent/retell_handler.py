@@ -114,17 +114,17 @@ async def handle_websocket(websocket: WebSocket, call_id: str) -> None:
                 continue
 
             if interaction_type == "update_only":
-                # Real-time transcript update — extract fields passively
-                transcript = data.get("transcript", [])
-                if transcript:
-                    last_utterance = transcript[-1].get("content", "")
-                    _extract_known_fields(last_utterance, state)
+                # Real-time transcript update — skip heavy processing
                 continue
 
             if interaction_type in ("response_required", "reminder_required"):
                 response_id = data.get("response_id", 0)
                 current_response_id = response_id
                 transcript = data.get("transcript", [])
+
+                if transcript:
+                    last_utterance = transcript[-1].get("content", "")
+                    _extract_known_fields(last_utterance, state)
 
                 logger.info(
                     f"💬 {interaction_type} | response_id={response_id} | "
@@ -218,8 +218,12 @@ async def _handle_response(
 
     # Loop to allow continuous generation after a tool call
     while True:
+        if state.audit_result and not state.audit_delivered:
+            state.audit_delivered = True
         try:
             full_response = ""
+            buffer = ""
+            punctuation = {'.', '?', '!', ',', '\n'}
             async for token in llm_inference_stream(state):
                 # Check for barge-in
                 if current_response_id_ref() != response_id:
@@ -235,19 +239,35 @@ async def _handle_response(
                     break # Break inner loop, restart inference
 
                 full_response += token
-                # Stream each token to Retell
-                try:
-                    await websocket.send_json({
-                        "response_type": "response",
-                        "response_id": response_id,
-                        "content": token,
-                        "content_complete": False,
-                        "end_call": False,
-                    })
-                except (Exception, RuntimeError):
-                    logger.info(f"🔌 WebSocket disconnected mid-stream for {state.call_id}")
-                    return
+                buffer += token
+
+                # ONLY send to Retell when we hit a logical pause or buffer gets too big
+                if any(p in token for p in punctuation) or len(buffer) > 40:
+                    try:
+                        await websocket.send_json({
+                            "response_type": "response",
+                            "response_id": response_id,
+                            "content": buffer,
+                            "content_complete": False,
+                            "end_call": False,
+                        })
+                        buffer = "" # Clear buffer after sending
+                    except (Exception, RuntimeError):
+                        logger.info(f"🔌 WebSocket disconnected mid-stream for {state.call_id}")
+                        return
             else:
+                # Flush any remaining text at the end
+                if buffer:
+                    try:
+                        await websocket.send_json({
+                            "response_type": "response",
+                            "response_id": response_id,
+                            "content": buffer,
+                            "content_complete": False,
+                            "end_call": False,
+                        })
+                    except (Exception, RuntimeError):
+                        pass
                 # Loop naturally finished without a break
                 state.last_bot_utterance = full_response
                 try:
@@ -489,6 +509,8 @@ def _apply_graph_result(state: CallState, result: dict) -> None:
     state.last_bot_utterance = result.get("last_bot_utterance", state.last_bot_utterance)
     state.audit_result = result.get("audit_result", state.audit_result)
     state.booking_result = result.get("booking_result", state.booking_result)
+    if "audit_delivered" in result:
+        state.audit_delivered = result["audit_delivered"]
 
     current_node = result.get("current_node")
     if current_node:
