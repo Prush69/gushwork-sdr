@@ -209,7 +209,9 @@ Acknowledge what the user just said, and then naturally transition by saying som
 "By the way, while you were explaining that, my system finished running a live AI visibility scan on your company..."
 """
         node_prompt = node_prompt + "\n\n" + pivot
-        state.audit_delivered = True
+        # Instead of dynamically appending, we'll return audit_delivered = True in the node
+        # Wait, _build_messages is called in the stream too, where we don't return state to langgraph.
+        # But we do mutate the local state. The actual state persistence in LangGraph happens when nodes return.
         
     if node_prompt:
         messages.append(
@@ -273,11 +275,16 @@ async def llm_inference(state: CallState | dict[str, Any]) -> dict[str, Any]:
 
     # Regular text response
     text = _content_to_text(response.content)
-    return {
+    update = {
         "messages": state.messages + [{"role": "assistant", "content": text}],
         "last_bot_utterance": text,
         "interrupted_at_char": None,
     }
+
+    if state.audit_result and not state.audit_delivered:
+        update["audit_delivered"] = True
+
+    return update
 
 
 @traceable(name="llm_stream", run_type="llm")
@@ -287,6 +294,9 @@ async def llm_inference_stream(state: CallState | dict[str, Any]) -> AsyncIterat
     Used by the SSE endpoint for sub-100ms TTFB (Improvement 1).
     """
     state = _coerce_state(state)
+
+    # Actually, in stream mode, the state is NOT persisted back to LangGraph directly from this generator.
+    # The `retell_handler` handles stream state. Let's just modify the prompts.py.
     llm_with_tools = get_llm_with_tools(state)
     messages = _build_messages(state)
 
