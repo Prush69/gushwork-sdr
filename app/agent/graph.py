@@ -23,7 +23,6 @@ from langsmith import traceable
 from app.agent.prompts import NODE_PROMPTS, SYSTEM_PROMPT, TOOL_DEFINITIONS
 from app.config import settings
 from app.schemas import (
-    AuditRequest,
     BookingRequest,
     CallState,
     ConversationNode,
@@ -171,18 +170,6 @@ def _build_state_summary(state: CallState) -> str:
         if value:
             facts.append(f"{label}: {value}")
 
-    if state.audit_result:
-        audit = state.audit_result
-        if isinstance(audit, dict):
-            sov = float(audit.get("share_of_voice_pct", 0.0))
-            score = float(audit.get("aeo_score", 0.0))
-        else:
-            sov = getattr(audit, "share_of_voice_pct", 0.0)
-            score = getattr(audit, "aeo_score", 0.0)
-            
-        facts.append(
-            f"Audit: {sov:.1f}% Share of Voice, {score:.1f}/100 AEO score"
-        )
     if state.booking_result and state.booking_result.success:
         facts.append(f"Booking confirmed: {state.booking_result.booked_at}")
 
@@ -210,22 +197,6 @@ def _build_messages(state: CallState | dict[str, Any]) -> list:
     # Inject node-specific context
     node_prompt = NODE_PROMPTS.get(state.current_node.value, "")
     
-    # 💉 INJECT THE PIVOT IF BACKGROUND AUDIT FINISHED
-    if state.audit_result and not state.audit_delivered:
-        data = state.audit_result
-        pivot = f"""
-[SYSTEM ALERT: Your background AEO audit just finished!]
-Results: {data.diagnosis} - Score: {data.share_of_voice_pct}%
-
-YOUR DIRECTIVE: Seamlessly pivot the conversation RIGHT NOW. 
-Acknowledge what the user just said, and then naturally transition by saying something like: 
-"By the way, while you were explaining that, my system finished running a live AI visibility scan on your company..."
-"""
-        node_prompt = node_prompt + "\n\n" + pivot
-        # Instead of dynamically appending, we'll return audit_delivered = True in the node
-        # Wait, _build_messages is called in the stream too, where we don't return state to langgraph.
-        # But we do mutate the local state. The actual state persistence in LangGraph happens when nodes return.
-        
     if node_prompt:
         messages.append(
             SystemMessage(content=f"[CURRENT PHASE: {state.current_node.value}]\n{node_prompt}")
@@ -380,9 +351,7 @@ def route_after_inference(state: CallState | dict[str, Any]) -> str:
 
     if tool_calls:
         tool_name = tool_calls[0].get("name", "")
-        if tool_name == "audit_ai_search":
-            return "execute_audit"
-        elif tool_name == "book_calendar_slot":
+        if tool_name == "book_calendar_slot":
             return "execute_booking"
 
     node = state.current_node
@@ -405,72 +374,6 @@ class ToolExecutionError(Exception):
         self.error = error
         self.original_args = original_args
         super().__init__(f"Tool '{tool_name}' failed: {error}")
-
-
-@traceable(name="execute_audit", run_type="tool")
-async def execute_audit(state: CallState | dict[str, Any]) -> dict[str, Any]:
-    """Execute the AEO audit tool call with retry logic.
-
-    If the audit fails (API timeout, bad data), the error is passed back
-    to Gemini with instructions to ask the user for clarification.
-    """
-    from app.tools.audit import run_aeo_audit
-
-    state = _coerce_state(state)
-    last_msg = state.messages[-1]
-    tool_calls = last_msg.get("tool_calls", [])
-    if not tool_calls:
-        return {}
-
-    tc = tool_calls[0]
-    args = tc.get("args", {})
-
-    for attempt in range(1, TOOL_MAX_RETRIES + 1):
-        try:
-            request = AuditRequest(**args)
-            result = await run_aeo_audit(request)
-
-            return {
-                "messages": state.messages
-                + [
-                    {
-                        "role": "tool",
-                        "content": result.model_dump_json(),
-                        "tool_call_id": tc.get("id", ""),
-                    }
-                ],
-                "audit_result": result,
-                "company_name": request.company_name,
-                "industry": request.industry,
-                "current_node": ConversationNode.AUDIT_RESULTS,
-            }
-
-        except Exception as e:
-            logger.warning(
-                f"Audit tool attempt {attempt}/{TOOL_MAX_RETRIES} failed: {e}",
-                exc_info=True,
-            )
-            if attempt == TOOL_MAX_RETRIES:
-                # Final failure — inject error into conversation for LLM recovery
-                error_msg = (
-                    f"The audit_ai_search tool failed with error: {str(e)}. "
-                    f"Original arguments: {args}. "
-                    f"Ask the user to clarify their company name and industry, "
-                    f"then try the tool call again."
-                )
-                return {
-                    "messages": state.messages
-                    + [
-                        {
-                            "role": "tool",
-                            "content": error_msg,
-                            "tool_call_id": tc.get("id", ""),
-                        }
-                    ],
-                    "current_node": ConversationNode.ICP_QUALIFICATION,
-                }
-
-    return {}
 
 
 @traceable(name="execute_booking", run_type="tool")
@@ -590,7 +493,6 @@ def build_graph() -> StateGraph:
     workflow = StateGraph(CallState)
 
     workflow.add_node("llm_inference", llm_inference)
-    workflow.add_node("execute_audit", execute_audit)
     workflow.add_node("execute_booking", execute_booking)
     workflow.add_node("secondary_inference", secondary_inference)
 
@@ -600,12 +502,10 @@ def build_graph() -> StateGraph:
         "llm_inference",
         route_after_inference,
         {
-            "execute_audit": "execute_audit",
             "execute_booking": "execute_booking",
             END: END,
         },
     )
-    workflow.add_edge("execute_audit", "secondary_inference")
     workflow.add_edge("execute_booking", "secondary_inference")
     workflow.add_edge("secondary_inference", END)
 
