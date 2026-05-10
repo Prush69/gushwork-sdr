@@ -195,19 +195,7 @@ async def _handle_response(
         last_user = transcript[-1].get("content", "")
         _extract_known_fields(last_user, state)
 
-    # ⚡ TRIGGER BACKGROUND AEO AUDIT IF NOT STARTED
-    # Guard against junk extractions like "industry" or "here"
-    invalid_names = {"industry", "company", "startup", "here", "is", "unknown", "none"}
-    company = state.company_name or ""
-    
-    if (len(company) > 2 and 
-        company.lower() not in invalid_names and 
-        state.industry and 
-        not state.audit_started):
-        
-        state.audit_started = True
-        from app.tools.audit import run_background_aeo_audit
-        asyncio.create_task(run_background_aeo_audit(state))
+   
 
     # Determine conversation node
     user_text = transcript[-1]["content"] if transcript else ""
@@ -390,36 +378,26 @@ async def _handle_tool_call_during_stream(
 # Routing Logic
 # ═══════════════════════════════════════════════════════════
 
-
 def _detect_routing_intent(transcript: str, state: CallState) -> ConversationNode:
-    """Logical pipeline routing based on the new Gushwork Playbook."""
+    """Frictionless routing to let the LLM converse naturally."""
     text = transcript.lower() if transcript else ""
     current = state.current_node
 
     if any(w in text for w in ["cost", "price", "expensive"]):
         return ConversationNode.OBJECTION_HANDLING
 
-    # The New Logical Pipeline
+    if any(w in text for w in ["just book", "book me", "skip", "book a meeting"]):
+        return ConversationNode.BANT_NEED
+
+    # Give the LLM plenty of room to converse in the qualification phase
     if current == ConversationNode.GREETING:
-        return ConversationNode.ROUTING  # Transition to asking for Role/Company
-        
-    if current == ConversationNode.ROUTING:
-        if state.company_name and state.industry:
-            if state.audit_result:
-                return ConversationNode.AUDIT_RESULTS
-            return ConversationNode.ICP_QUALIFICATION # Triggers the audit
-        return ConversationNode.ROUTING
-        
-    if current == ConversationNode.ICP_QUALIFICATION:
-        if state.audit_result:
-            return ConversationNode.AUDIT_RESULTS # Pitch the meeting
         return ConversationNode.ICP_QUALIFICATION
         
-    if current == ConversationNode.AUDIT_RESULTS:
-        # If they agree to the meeting (yes, sure, absolutely, okay)
-        if any(w in text for w in ["yes", "sure", "ok", "okay", "absolutely", "fine", "let's do it"]):
-            return ConversationNode.BANT_NEED # Repurposed for "Collecting Email/Time"
-        return ConversationNode.AUDIT_RESULTS
+    if current == ConversationNode.ICP_QUALIFICATION:
+        # Once they show intent to meet, move to logistics
+        if any(w in text for w in ["yes", "sure", "ok", "okay", "absolutely", "fine", "let's do it", "sounds good"]):
+            return ConversationNode.BANT_NEED 
+        return ConversationNode.ICP_QUALIFICATION
         
     if current == ConversationNode.BANT_NEED:
         if state.email and any(w in text for w in ["am", "pm", "morning", "afternoon", "tomorrow", "time"]):
