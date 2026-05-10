@@ -24,15 +24,19 @@ from app.routes.retell import router as retell_router
 from app.routes.tools import router as tools_router
 from app.routes.widget import router as widget_router
 
+
 # ── Logging ────────────────────────────────────────────────
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s │ %(levelname)-7s │ %(name)s │ %(message)s",
     datefmt="%H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),  # Keeps it in the Render dashboard
+        logging.FileHandler("server_debug.log", mode="a", encoding="utf-8") # Saves it to a file
+    ]
 )
 logger = logging.getLogger("gushwork")
-
 # ── App ────────────────────────────────────────────────────
 
 app = FastAPI(
@@ -101,7 +105,16 @@ async def root():
     """Root redirect to the web widget UI."""
     return RedirectResponse(url="/widget")
 
+from fastapi.responses import PlainTextResponse
 
+@app.get("/dev-logs")
+async def get_dev_logs():
+    """Dev Team Endpoint: View full console logs directly in the browser."""
+    try:
+        with open("server_debug.log", "r", encoding="utf-8") as f:
+            return PlainTextResponse(f.read())
+    except FileNotFoundError:
+        return PlainTextResponse("No logs generated yet. Make a call first!")
 # ── Startup / Shutdown ─────────────────────────────────────
 
 
