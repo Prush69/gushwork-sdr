@@ -37,33 +37,48 @@ TOOL_MAX_RETRIES = 2
 # ═══════════════════════════════════════════════════════════
 # LLM Singleton (supports Gemini & Groq)
 # ═══════════════════════════════════════════════════════════
+import itertools
+import os
 
-_llm: Any = None
-_llm_with_tools: Any | None = None
-
+_groq_key_cycle = None
+_gemini_llm = None
 
 def get_llm() -> Any:
-    """Lazy-init the LLM based on LLM_PROVIDER config (gemini or groq)."""
-    global _llm
-    if _llm is None:
-        provider = settings.llm_provider.lower()
-        logger.info(f"Initializing LLM: provider={provider}")
-
-        if provider == "groq":
-            from langchain_groq import ChatGroq
-
-            logger.info(f"  model={settings.groq_model}")
-            _llm = ChatGroq(
-                model=settings.groq_model,
-                temperature=settings.llm_temperature,
-                max_tokens=settings.llm_max_tokens,
-                api_key=settings.groq_api_key,
-                streaming=True,
-            )
-        else:
+    """Initialize the LLM, rotating Groq API keys to bypass rate limits during testing."""
+    global _groq_key_cycle, _gemini_llm
+    
+    provider = settings.llm_provider.lower()
+    
+    if provider == "groq":
+        from langchain_groq import ChatGroq
+        
+        # 1. Initialize the infinite cycle of keys the first time this is called
+        if _groq_key_cycle is None:
+            # Get the comma-separated list of keys, fallback to the single key if not found
+            keys_str = os.getenv("GROQ_API_KEYS", settings.groq_api_key)
+            keys = [k.strip() for k in keys_str.split(",") if k.strip()]
+            if not keys:
+                keys = ["dummy_key"]
+            _groq_key_cycle = itertools.cycle(keys)
+            logger.info(f"🔄 Initialized Groq API Key Rotator with {len(keys)} keys.")
+        
+        # 2. Grab the next key in the cycle
+        current_key = next(_groq_key_cycle)
+        
+        # 3. Return a fresh instance with the new key
+        return ChatGroq(
+            model=settings.groq_model,
+            temperature=settings.llm_temperature,
+            max_tokens=settings.llm_max_tokens,
+            api_key=current_key,
+            streaming=True,
+        )
+        
+    else:
+        # Keep Gemini as a singleton if you switch back
+        if _gemini_llm is None:
             from langchain_google_genai import ChatGoogleGenerativeAI
-
-            logger.info(f"  model={settings.gemini_model}")
+            logger.info(f"Initializing LLM: provider=gemini model={settings.gemini_model}")
             kwargs: dict[str, Any] = {
                 "model": settings.gemini_model,
                 "temperature": settings.llm_temperature,
@@ -71,12 +86,8 @@ def get_llm() -> Any:
                 "google_api_key": settings.gemini_api_key,
                 "streaming": True,
             }
-            if "preview" in settings.gemini_model or settings.gemini_model.startswith("gemini-3"):
-                if not settings.gemini_model.endswith("-lite"):
-                    kwargs["thinking_budget"] = 0
-                    kwargs["include_thoughts"] = False
-            _llm = ChatGoogleGenerativeAI(**kwargs)
-    return _llm
+            _gemini_llm = ChatGoogleGenerativeAI(**kwargs)
+        return _gemini_llm
 
 
 def get_llm_with_tools(state: CallState | None = None) -> Any:
