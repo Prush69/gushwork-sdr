@@ -86,13 +86,14 @@ async def handle_websocket(websocket: WebSocket, call_id: str) -> None:
             },
         })
 
-        # Step 2: Send greeting (first message)
+      
+      # Step 2: Send greeting (first message)
         await websocket.send_json({
             "response_type": "response",
             "response_id": 0,
             "content": (
-                "Thanks for calling Gushwork! Are you calling for support, "
-                "or are you looking to generate more inbound leads?"
+                "Hi! Thanks for calling Gushwork. "
+                "Who do I have the pleasure of speaking with today?"
             ),
             "content_complete": True,
             "end_call": False,
@@ -391,50 +392,46 @@ async def _handle_tool_call_during_stream(
 
 
 def _detect_routing_intent(transcript: str, state: CallState) -> ConversationNode:
-    """Deterministic node routing based on transcript + current state."""
+    """Logical pipeline routing based on the new Gushwork Playbook."""
     text = transcript.lower() if transcript else ""
     current = state.current_node
 
-    # Objection detection overrides everything
-    if any(w in text for w in ["cost", "price", "expensive", "how much"]):
-        return ConversationNode.OBJECTION_HANDLING
-    if any(w in text for w in ["not ready", "later", "next quarter"]):
-        return ConversationNode.OBJECTION_HANDLING
-    if any(w in text for w in ["my boss", "team", "check with"]):
+    if any(w in text for w in ["cost", "price", "expensive"]):
         return ConversationNode.OBJECTION_HANDLING
 
-    # Booking intent
-    if any(w in text for w in ["book", "schedule", "meeting", "set up"]):
-        return ConversationNode.BOOKING
-
-    # Progressive BANT flow
+    # The New Logical Pipeline
     if current == ConversationNode.GREETING:
-        return ConversationNode.ROUTING
+        return ConversationNode.ROUTING  # Transition to asking for Role/Company
+        
     if current == ConversationNode.ROUTING:
-        if any(w in text for w in ["support", "help", "issue"]):
-            return ConversationNode.TERMINAL
-        return ConversationNode.ICP_QUALIFICATION
-    if current == ConversationNode.ICP_QUALIFICATION:
         if state.company_name and state.industry:
-            return ConversationNode.BANT_NEED
+            if state.audit_result:
+                return ConversationNode.AUDIT_RESULTS
+            return ConversationNode.ICP_QUALIFICATION # Triggers the audit
+        return ConversationNode.ROUTING
+        
+    if current == ConversationNode.ICP_QUALIFICATION:
+        if state.audit_result:
+            return ConversationNode.AUDIT_RESULTS # Pitch the meeting
         return ConversationNode.ICP_QUALIFICATION
+        
+    if current == ConversationNode.AUDIT_RESULTS:
+        # If they agree to the meeting (yes, sure, absolutely, okay)
+        if any(w in text for w in ["yes", "sure", "ok", "okay", "absolutely", "fine", "let's do it"]):
+            return ConversationNode.BANT_NEED # Repurposed for "Collecting Email/Time"
+        return ConversationNode.AUDIT_RESULTS
+        
     if current == ConversationNode.BANT_NEED:
-        return ConversationNode.BANT_BUDGET
-    if current == ConversationNode.BANT_BUDGET:
-        return ConversationNode.BANT_AUTHORITY
-    if current == ConversationNode.BANT_AUTHORITY:
-        return ConversationNode.BANT_TIMELINE
-    if current == ConversationNode.BANT_TIMELINE:
-        return ConversationNode.BOOKING
+        if state.email and any(w in text for w in ["am", "pm", "morning", "afternoon", "tomorrow", "time"]):
+            return ConversationNode.BOOKING
+        return ConversationNode.BANT_NEED
+        
     if current == ConversationNode.BOOKING:
         if state.booking_result and state.booking_result.success:
             return ConversationNode.CLOSING
         return ConversationNode.BOOKING
-    if current == ConversationNode.CLOSING:
-        return ConversationNode.TERMINAL
-
+        
     return current
-
 
 # ═══════════════════════════════════════════════════════════
 # Helpers
