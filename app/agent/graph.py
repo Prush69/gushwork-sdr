@@ -327,6 +327,12 @@ async def llm_inference_stream(state: CallState | dict[str, Any]) -> AsyncIterat
                 break # Break cleanly to allow the pipeline to send whatever text was generated
             else:
                 raise e # Raise if it's a 400, 500, or other non-rate-limit error
+        except groq.APIError as e:
+            # Catch the base APIError that lacks a status_code but contains the tool choice string
+            if "Tool choice is none" in str(e):
+                logger.warning("Caught Groq tool streaming quirk (base APIError). Preserving buffered response.")
+                break
+            raise e
 
     total = (time.perf_counter() - t0) * 1000
     logger.info(f"Total stream time: {total:.0f}ms")
