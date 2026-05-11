@@ -1,4 +1,4 @@
-# Gushwork SDR — High-Performance Inbound Voice Agent
+# Gushwork SDR - High-Performance Inbound Voice Agent
 
 An ultra-low latency, modular inbound voice SDR designed to qualify leads using the BANT methodology, execute complex tool calls (calendar booking, AEO audits), and asynchronously sync to CRM systems.
 
