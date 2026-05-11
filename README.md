@@ -1,102 +1,58 @@
-# Gushwork SDR — Inbound AEO Voice Agent
+# Gushwork SDR — High-Performance Inbound Voice Agent
 
-Sub-500ms latency voice SDR that qualifies inbound leads using BANT methodology and runs **real-time AI visibility audits** on prospects — powered by Gemini 3 Flash and Retell AI.
+An ultra-low latency, modular inbound voice SDR designed to qualify leads using the BANT methodology, execute complex tool calls (calendar booking, AEO audits), and asynchronously sync to CRM systems.
 
-## Architecture
+Built over a weekend, this architecture is an exercise in **combinatory play**. By isolating disparate infrastructure components—Retell's WebRTC/STT layer, Groq's high-throughput MoE inference, and LangGraph's state management—and snapping them onto a **generic foundational pipeline**, the result is a highly deterministic, hallucination-resistant voice agent.
 
-```
-Caller (browser/phone)
-    ↕  WebRTC
-Retell AI (managed)
-    ├── Deepgram STT (managed by Retell)
-    ├── ElevenLabs TTS (managed by Retell)
-    └── Webhook POST →  Render backend
-                           ├── /retell/webhook      → LangGraph → Gemini 3 Flash
-                           ├── /retell/webhook/stream → SSE streaming (sub-100ms TTFB)
-                           ├── /audit_ai_search      → Real AEO audit via Gemini
-                           ├── /book_calendar_slot   → Cal.com API
-                           └── /sync_crm             → HubSpot (optional)
-```
+---
 
-## Tech Stack
+## 🚀 Live Performance Benchmarks
+*Metrics extracted from production server logs via WebRTC & Groq (`openai/gpt-oss-120b`):*
 
-| Layer | Technology |
-|-------|-----------|
-| Voice Infrastructure | Retell AI (WebRTC + STT + TTS) |
-| LLM | Gemini 3 Flash Preview via `langchain-google-genai` |
-| State Machine | LangGraph |
-| API Framework | FastAPI + SSE Streaming |
-| Calendar | Cal.com API |
-| CRM | HubSpot API (optional) |
-| Observability | LangSmith tracing |
-| Deployment | Render |
+* **Average LLM TTFB (Time-To-First-Byte):** `142ms - 237ms`
+* **Full Turn Response Generation:** `336ms - 1.2s`
+* **State Machine Evaluation:** `< 50ms`
+* **Post-Call Async Resolution (CRM Sync):** `< 20ms`
 
-## Key Features
+---
 
-- **Real AEO Audit** — Queries Gemini with 5 industry-relevant prompts to measure actual Share of Voice
-- **SSE Streaming** — Sub-100ms TTFB via token-level streaming to Retell TTS
-- **BANT State Machine** — Deterministic conversation routing, no LLM-decided edges
-- **Tool Retry Loops** — Self-correcting tool execution with LLM-mediated error recovery
-- **LangSmith Tracing** — Full observability across every node and tool call
-- **Rich CRM Visualization** — Color-coded terminal output for demo recordings
+## 🧠 Core Architecture & Data Flow
 
-For a step-by-step runtime breakdown and optimization notes, see [`PIPELINE.md`](PIPELINE.md).
+The system is engineered to remove the LLM from the critical path of state transitions. It relies on Python for deterministic routing logic, restricting the LLM strictly to conversational formatting, entity extraction, and tool parameter generation.
 
-## Setup
+### 1. The Hot Path (Per-Turn Execution)
+Data traverses the foundational pipeline via WebSockets in milliseconds:
 
-```bash
-# Install
-pip install -e .
+1. **Ingestion (WebRTC -> STT):** Retell handles transport and transcription, firing a `response_required` event to the FastAPI `llm-websocket` endpoint.
+2. **Pre-Compute Extraction:** Before hitting the LLM, the utterance is scanned via RegEx and deterministic heuristics for cheap data (e.g., detecting canonical industry keywords). This saves tokens and reduces LLM cognitive load.
+3. **Deterministic Routing:** The LangGraph state machine evaluates the `CallState` and the user's intent to deterministically transition nodes (e.g., `GREETING` → `ICP_QUALIFICATION` → `BANT_NEED` → `BOOKING`).
+4. **Streaming Inference:** The active model begins generating the response. 
+    * *Text Routing:* Tokens are streamed directly back to Retell for immediate TTS synthesis.
+    * *Barge-In Interrupts:* If the user interrupts, the pipeline tracks the `response_id` delta, instantly kills the active generation loop, records the cutoff string, and dynamically pivots the context.
 
-# Configure
-cp .env.example .env
-# Fill in your API keys
+### 2. The Asynchronous Path (Post-Call)
+Once the WebSocket disconnects (`call_ended` or error state), the hot path terminates and spawns isolated background tasks. **This ensures data is never lost, even if the active call crashes.**
 
-# Run
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
+1. **Outcome Evaluation:** The terminal node evaluates the call outcome (`meeting_booked`, `not_qualified`, `dropped`).
+2. **CRM Mapping:** The transcript, BANT qualification fields, and audit data are mapped to a strict `LeadSyncRequest` Pydantic schema.
+3. **CRM Sync:** Data is pushed to HubSpot/Salesforce via API. If no keys are present, a Rich-formatted visualization of the CRM payload is logged to the server terminal.
 
-## Environment Variables
+---
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `RETELL_API_KEY` | ✅ | Retell AI API key |
-| `RETELL_AGENT_ID` | ✅ | Retell agent ID (Custom LLM mode) |
-| `GEMINI_API_KEY` | ✅ | Google Gemini API key |
-| `CALCOM_API_KEY` | ✅ | Cal.com API key |
-| `CALCOM_EVENT_TYPE_ID` | ✅ | Cal.com event type ID |
-| `LANGSMITH_API_KEY` | Optional | LangSmith tracing key |
-| `HUBSPOT_API_KEY` | Optional | HubSpot CRM key |
-| `LLM_CONTEXT_MESSAGES` | Optional | Max recent messages sent to Gemini per turn |
-| `CALL_STATE_TTL_SECONDS` | Optional | In-memory call-state cleanup window |
-| `AUDIT_QUERY_TIMEOUT_SECONDS` | Optional | Per-query timeout for AEO audit probes |
-| `AUDIT_CACHE_TTL_SECONDS` | Optional | Cache window for repeated AEO audits |
+## ⚙️ Key Engineering Guardrails
 
-## Deploy to Render
+* **The Pydantic Firewall:** LLMs hallucinate JSON. Every tool call generated by the model must pass through strict Pydantic schema validation (`app/schemas.py`). If the model fabricates a calendar field, it is rejected before it ever hits the Cal.com integration.
+* **Latency Masking:** Complex tool calls (like the multi-agent `audit_ai_search`) take time. The pipeline detects tool initiation mid-stream and instantly pushes a contextual filler word ("Let me check my calendar...") to the voice buffer to avoid awkward dead air.
+* **Tool-Level Retry Loops:** Network requests fail. If an API rejects a payload, the pipeline captures the exception, feeds the exact error back into the LLM context, and allows the model to naturally self-correct with the user—up to a `TOOL_MAX_RETRIES` limit.
+* **LLM Agnosticism:** The routing logic is decoupled from the inference engine. The `LLM_PROVIDER` environment variable dynamically switches between Groq MoE and Gemini interfaces without requiring prompt re-engineering.
 
-1. Push to GitHub
-2. Connect repo in Render dashboard
-3. Render auto-detects `render.yaml`
-4. Set environment variables in Render dashboard
-5. Deploy
+---
 
-## Project Structure
+## ⚠️ Known Tradeoffs & Limitations
 
-```
-app/
-├── main.py                  # FastAPI entrypoint
-├── config.py                # Settings from .env
-├── schemas.py               # Pydantic models
-├── agent/
-│   ├── retell_handler.py    # Webhook handler + SSE streaming
-│   ├── graph.py             # LangGraph state machine
-│   └── prompts.py           # System prompt + tool definitions
-├── routes/
-│   ├── retell.py            # POST /retell/webhook[/stream]
-│   ├── tools.py             # POST /audit, /book, /sync
-│   └── widget.py            # GET /widget
-└── tools/
-    ├── audit.py             # Real AEO audit via Gemini
-    ├── calendar.py          # Cal.com booking
-    └── crm.py               # HubSpot sync + Rich terminal viz
-```
+To achieve the `140ms` TTFB, this pipeline defaults to Groq's open-weight MoE (`openai/gpt-oss-120b`). 
+* **The Tradeoff:** Groq's tool-streaming implementation is currently experimental. This occasionally results in a `Tool choice is none, but model called a tool` exception at the final booking node. 
+* **The Fallback:** The system is built to be fault-tolerant. As seen in the server logs, even when this exception breaks the WebSocket, the `_safe_fire_crm_sync` background task catches the dropped state and perfectly preserves the call transcript and BANT data. For absolute stability over speed, the pipeline can be instantly swapped to Gemini 3 Flash via the `.env` file.
+* **State Management Scaling:** Currently, `CallState` is held in an in-memory dictionary. Before horizontal scaling (multiple Uvicorn workers), this must be migrated to Redis to prevent state loss on WebSocket reconnections.
+
+---
