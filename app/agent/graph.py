@@ -10,7 +10,7 @@ LLM: Google Gemini 3 Flash Preview via langchain-google-genai.
 """
 
 from __future__ import annotations
-
+import groq
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -273,40 +273,57 @@ async def llm_inference(state: CallState | dict[str, Any]) -> dict[str, Any]:
 
 @traceable(name="llm_stream", run_type="llm")
 async def llm_inference_stream(state: CallState | dict[str, Any]) -> AsyncIterator[str]:
-    """Streaming variant — yields tokens as Gemini produces them.
+    """Streaming variant — yields tokens as the model produces them.
 
-    Used by the SSE endpoint for sub-100ms TTFB (Improvement 1).
+    Upgraded with a self-healing retry loop to bypass rate limits dynamically.
     """
     state = _coerce_state(state)
-
-    # Actually, in stream mode, the state is NOT persisted back to LangGraph directly from this generator.
-    # The `retell_handler` handles stream state. Let's just modify the prompts.py.
-    llm_with_tools = get_llm_with_tools(state)
     messages = _build_messages(state)
+
+    # Determine max retries (e.g., try up to 3 different keys before failing)
+    max_retries = 3 
+    attempts = 0
 
     t0 = time.perf_counter()
     first_token = True
 
-    async for chunk in llm_with_tools.astream(messages):
-        if first_token:
-            ttfb = (time.perf_counter() - t0) * 1000
-            logger.info(f"Groq TTFB: {ttfb:.0f}ms")
-            first_token = False
+    while attempts < max_retries:
+        try:
+            # get_llm_with_tools calls get_llm, which grabs the NEXT key in the cycle
+            llm_with_tools = get_llm_with_tools(state)
+            
+            async for chunk in llm_with_tools.astream(messages):
+                if first_token:
+                    ttfb = (time.perf_counter() - t0) * 1000
+                    logger.info(f"LLM TTFB: {ttfb:.0f}ms (Attempt {attempts + 1})")
+                    first_token = False
 
-        # Check for tool calls in the stream
-        tool_calls = getattr(chunk, "tool_calls", None) or []
-        if tool_calls:
-            # Tool calls can't be streamed — yield a marker
-            yield f"__TOOL_CALL__:{tool_calls[0].get('name', '')}"
-            return
+                # Check for tool calls in the stream
+                tool_calls = getattr(chunk, "tool_calls", None) or []
+                if tool_calls:
+                    yield f"__TOOL_CALL__:{tool_calls[0].get('name', '')}"
+                    return
 
-        content = _content_to_text(chunk.content)
-        if content:
-            yield content
+                content = _content_to_text(chunk.content)
+                if content:
+                    yield content
+            
+            # If the stream completes without a 429 error, break the retry loop
+            break 
+            
+        except groq.APIStatusError as e:
+            if e.status_code == 429:
+                attempts += 1
+                logger.warning(f"Rate limit hit (429). Rotating to next key... (Attempt {attempts}/{max_retries})")
+                if attempts >= max_retries:
+                    logger.error("All keys rate limited. Dropping stream.")
+                    raise e
+                continue # Loops back to the top of the 'while', pulling a fresh key
+            else:
+                raise e # Raise if it's a 400, 500, or other non-rate-limit error
 
     total = (time.perf_counter() - t0) * 1000
-    logger.info(f"Groq total stream: {total:.0f}ms")
-
+    logger.info(f"Total stream time: {total:.0f}ms")
 
 # ═══════════════════════════════════════════════════════════
 # Routing Logic
