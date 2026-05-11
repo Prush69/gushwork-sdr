@@ -95,7 +95,7 @@ def get_llm_with_tools(state: CallState | None = None) -> Any:
     """Return a tool-bound LLM wrapper, dynamically filtering tools based on state."""
     llm = get_llm()
     if not state:
-        return llm.bind_tools(TOOL_DEFINITIONS)
+        return llm.bind_tools(TOOL_DEFINITIONS, tool_choice="auto", parallel_tool_calls=False)
         
     tools_to_bind = []
     for tool in TOOL_DEFINITIONS:
@@ -111,7 +111,9 @@ def get_llm_with_tools(state: CallState | None = None) -> Any:
             
     if not tools_to_bind:
         return llm
-    return llm.bind_tools(tools_to_bind)
+    
+    # Safe fix: explicitly define tool_choice and disable parallel tool calls
+    return llm.bind_tools(tools_to_bind, tool_choice="auto", parallel_tool_calls=False)
 
 
 def _coerce_state(state: CallState | dict[str, Any]) -> CallState:
@@ -319,6 +321,10 @@ async def llm_inference_stream(state: CallState | dict[str, Any]) -> AsyncIterat
                     logger.error("All keys rate limited. Dropping stream.")
                     raise e
                 continue # Loops back to the top of the 'while', pulling a fresh key
+            elif e.status_code == 400 and "Tool choice is none" in str(e):
+                # Catch the specific tool streaming quirk
+                logger.warning("Caught Groq tool streaming quirk. Preserving buffered response.")
+                break # Break cleanly to allow the pipeline to send whatever text was generated
             else:
                 raise e # Raise if it's a 400, 500, or other non-rate-limit error
 
